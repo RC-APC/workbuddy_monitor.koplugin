@@ -1,0 +1,20 @@
+[
+  {
+    "name": "适配微信读书到 OPPO Watch SE",
+    "status": "running",
+    "progress": 0.62,
+    "date": "2026-10-03"
+  },
+  {
+    "name": "Kindle 锁屏封面随看板更新",
+    "status": "done",
+    "progress": 1.0,
+    "date": "2026-10-04"
+  },
+  {
+    "name": "临床数据整合 RPA",
+    "status": "running",
+    "progress": 0.35,
+    "date": "2026-10-02"
+  }
+]

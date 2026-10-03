@@ -1,0 +1,7 @@
+{
+  "remaining": 1240,
+  "expiring": [
+    { "amount": 300, "daysLeft": 5 },
+    { "amount": 120, "daysLeft": 12 }
+  ]
+}
