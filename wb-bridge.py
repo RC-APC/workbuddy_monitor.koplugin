@@ -22,9 +22,22 @@ Env:  WB_PORT / WB_TOKEN (optional simple bearer token)
 """
 import json
 import os
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+# pythonw (silent launcher) has no console: sys.stdout/stderr are None and
+# ANY print() raises AttributeError, killing the process right after bind.
+# Redirect both to a log file so prints are harmless and diagnosable.
+if sys.stdout is None or sys.stderr is None:
+    _crashlog = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "bridge_stdout.log"),
+                     "w", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = _crashlog
+    if sys.stderr is None:
+        sys.stderr = _crashlog
 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("WB_PORT", "8765"))
@@ -71,6 +84,8 @@ def build_status():
     except Exception as e:
         print("warn: fetch_credits failed: %s" % e)
         live = None
+    auth_expired = bool(live.get("authExpired")) if live else False
+    no_cookie = bool(live.get("noCookie")) if live else False
     if live and (live.get("remaining") or 0) > 0:
         credits = {
             "remaining": live.get("remaining", 0),
@@ -80,11 +95,16 @@ def build_status():
             "cycle": live.get("cycle"),
             "expiring": live.get("expiring", []),
             "usage": live.get("usage"),
-            "live": True,
+            # keep the last-known balance visible, but flag it stale so the
+            # cover can shout "EXPIRED" instead of silently showing frozen LIVE
+            "live": not auth_expired,
         }
     else:
         credits = _load("credits.json", {"remaining": 0, "expiring": []})
         credits["live"] = False
+    # surface auth failures to the cover so a dead cookie is NEVER silent
+    credits["authExpired"] = auth_expired
+    credits["noCookie"] = no_cookie
     # 0) BEST SOURCE: the WorkBuddy client's OWN database
     #    (~/.workbuddy/workbuddy.db). It carries the exact task name shown in
     #    the client sidebar plus the credits that conversation has burned in
@@ -257,11 +277,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print("WorkBuddy bridge listening on http://0.0.0.0:%d" % PORT)
-    print("  status : http://<this-pc-ip>:%d/status.json" % PORT)
-    print("  cover  : http://<this-pc-ip>:%d/cover.png?w=1080&h=1440" % PORT)
     try:
+        srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print("WorkBuddy bridge listening on http://0.0.0.0:%d" % PORT)
+        print("  status : http://<this-pc-ip>:%d/status.json" % PORT)
+        print("  cover  : http://<this-pc-ip>:%d/cover.png?w=1080&h=1440" % PORT)
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")
+    except Exception:
+        # any startup/serve failure (port busy, import error, ...) must leave
+        # a readable traceback in bridge_stdout.log instead of dying silently
+        import traceback
+        print("!! bridge crashed:", flush=True)
+        traceback.print_exc()
+        sys.stdout.flush()
+        raise SystemExit(1)

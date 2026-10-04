@@ -11,9 +11,13 @@ Data source (discovered from the usercenter SPA):
         -> data.Response.Data.Accounts[] : {CycleEndTime, CapacityRemain, ...}
 
 Cookies are required (the same session cookie the browser uses). They are read
-from, in order:
-  1. env WB_COOKIE
-  2. cookies.txt next to this file   (git-ignored; the user refreshes it on login)
+from a single source of truth:
+
+  cookies.txt  next to this file   (git-ignored; one raw Cookie-header line,
+                                    '#' comment lines are skipped)
+
+To refresh after re-login, just overwrite that one file -- no environment
+variable, no relaunch dance beyond restarting the bridge.
 
 The result is cached to credits_cache.json for TTL seconds so we do not hammer
 the API on every /cover.png poll. If the live fetch fails we fall back to the
@@ -45,13 +49,21 @@ _HEADERS = {
 
 
 def _cookie():
-    c = os.environ.get("WB_COOKIE", "")
-    if c:
-        return c
+    """Read the session cookie from cookies.txt next to this file.
+
+    Single source of truth: the file is the ONLY place we look (no env-var
+    fallback) so a refresh is just a one-file overwrite. Blank lines and lines
+    starting with '#' are ignored, so the file can carry human-readable notes.
+    """
     if os.path.isfile(COOKIE_FILE):
         try:
+            parts = []
             with open(COOKIE_FILE, "r", encoding="utf-8") as f:
-                return f.read().strip()
+                for line in f:
+                    s = line.strip()
+                    if s and not s.startswith("#"):
+                        parts.append(s)
+            return "".join(parts).strip()
         except Exception:
             return ""
     return ""
@@ -117,6 +129,9 @@ def _parse_summary(data):
     pkgs = (data or {}).get("Packages", []) or []
     rem = used = total = 0.0
     for p in pkgs:
+        # 2026-10-04: 所有套餐包（含未动用的"基础包/赠送包"）都计入
+        # 剩余/已用/总额——体验版主套餐(007) + 基础包(008/030) 共同构成
+        # 可用额度，WorkBuddy 界面也是合并显示的（用户确认基础包要算）。
         rem += _num(p.get("CycleRemainCapacity"))
         used += _num(p.get("CycleUsedCapacity"))
         total += _num(p.get("CycleTotalCapacity"))

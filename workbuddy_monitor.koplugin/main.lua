@@ -41,7 +41,7 @@
 --             restart KOReader.
 --   3. Kindle: menu (top-left) -> WorkBuddy Monitor -> "设置桥地址" -> your PC IP:8765.
 --      - If the Kindle is on the PC's own hotspot, use http://192.168.137.1:8765
---      - If on the same router WiFi, use the PC's LAN IP (e.g. http://10.6.24.101:8765)
+--      - If on the same router WiFi, use the PC's LAN IP (e.g. http://192.168.1.20:8765)
 --      (If your KOReader build lacks a text-input dialog, instead edit the
 --       plugin's config.txt first line to the bridge URL and restart.)
 --   4. Menu -> "常驻看板" to view; it auto-refreshes every 3 minutes.
@@ -461,7 +461,7 @@ function WorkBuddyMonitor:configure()
     end
     if not (ok and Dlg) then
         UIManager:show(InfoMessage:new{
-            text = "此 KOReader 版本没有文本输入对话框，无法在此输入地址。\n\n请在插件目录的 config.txt 第一行写入桥地址，例如：\nhttp://192.168.137.1:8765  (连电脑热点)\n或 http://10.6.24.101:8765  (连路由器)\n然后重启 KOReader。",
+            text = "此 KOReader 版本没有文本输入对话框，无法在此输入地址。\n\n请在插件目录的 config.txt 第一行写入桥地址，例如：\nhttp://192.168.137.1:8765  (连电脑热点)\n或 http://192.168.1.20:8765  (连路由器)\n然后重启 KOReader。",
         })
         return
     end
@@ -503,7 +503,7 @@ function WorkBuddyMonitor:configure()
     local ok2, err = pcall(build)
     if not ok2 then
         UIManager:show(InfoMessage:new{
-            text = "无法创建输入对话框（此 KOReader 版本缺少该组件）。\n\n请直接编辑插件目录的 config.txt 第一行写入桥地址，例如：\nhttp://192.168.137.1:8765  (连电脑热点)\n或 http://10.6.24.101:8765  (连路由器)\n保存后重启 KOReader。",
+            text = "无法创建输入对话框（此 KOReader 版本缺少该组件）。\n\n请直接编辑插件目录的 config.txt 第一行写入桥地址，例如：\nhttp://192.168.137.1:8765  (连电脑热点)\n或 http://192.168.1.20:8765  (连路由器)\n保存后重启 KOReader。",
         })
         return
     end
@@ -579,6 +579,13 @@ function WorkBuddyMonitor:buildBoard(data, err)
     local credits = (data and data.credits) or {}
     local rem = tonumber(credits.remaining) or 0
     add("REMAINING: " .. tostring(rem) .. " credits", 22)
+    -- 今日实时消耗：取自 credits.usage.today，用于对齐 WorkBuddy 界面
+    -- "今日已用"。若该值与界面差距大，说明 usage API 口径漏抓，需另寻源。
+    local _usage = credits.usage or {}
+    local _today = tonumber(_usage.today)
+    if _today then
+        add("TODAY USED: " .. string.format("%.2f", _today) .. " credits", 20)
+    end
 
     local exp = credits.expiring or {}
     local soon = {}

@@ -14,15 +14,18 @@
 - **锁屏封面**：点过「设置休眠壁纸」后，看板每刷新一次就把最新一张复制进 `wb_ss/cover.png`；你只需在 KOReader 里把锁屏指向该文件夹，锁屏即随之更新。
 - **离线兜底**：桥抓不到实时数据时，回退到静态 `credits.json` / `tasks.json`，屏上永不空白。
 - **防休眠干扰**：常驻期间暂停 Kindle 自动待机，避免「点不动 / 只能重启」。
+- **登录失效报警**：Cookie 过期时，封面顶部出现全宽反白报警条「▲ 登录已失效 请刷新 cookies.txt」，`CREDITS` 徽标变反白 `EXPIRED`，积分数保留最后已知值并明确标记为失效态；PC 端双击启动器时还会弹窗提醒。
+- **任务名带空间**：属于某个工作空间的活跃任务，封面上显示为 `空间名-任务名`（无空间的任务显示原名）。
+- **今日已用**：Kindle 文字板额外显示 `TODAY USED: X credits`，与 WorkBuddy 界面口径对齐。
 
 ## 架构
 
 ```
- WorkBuddy 客户端/账号
-        │ cookies
+ WorkBuddy 网页 (workbuddy.cn)
+        │ cookies.txt（浏览器登录后的 Cookie）
         ▼
   ┌─────────────────────┐
-  │  PC 桥  wb-bridge.py │  监听 0.0.0.0:8765（仅标准库）
+  │  PC 桥  wb-bridge.py │  监听 0.0.0.0:8765（仅标准库 + Pillow）
   │   · /status.json     │
   │   · /cover.png       │  ← 用 Pillow 把状态渲染成 8 位灰度 PNG
   └─────────┬───────────┘
@@ -41,31 +44,39 @@
 workbuddy-koreader-monitor/
 ├── workbuddy_monitor.koplugin/   # Kindle 端 KOReader 插件
 │   ├── main.lua                  #   插件主体（看板/手势/锁屏）
-│   └── config.txt                #   第1行填桥地址，可选 theme=dark|light
-├── wb-bridge.py                  # 电脑端桥（HTTP 服务，仅标准库）
+│   ├── config.txt                #   第1行填桥地址，可选 theme=dark|light
+│   └── _meta.lua                 #   插件元信息
+├── wb-bridge.py                  # 电脑端桥（HTTP 服务，仅标准库 + Pillow）
 ├── cover_gen.py                  # PNG 渲染（Pillow）
-├── fetch_credits.py             # 抓 WorkBuddy 实时积分（需 cookies.txt）
-├── wb_sessions.py                # 读 WorkBuddy 本地会话库
+├── fetch_credits.py              # 抓 WorkBuddy 实时积分（需 cookies.txt）
+├── wb_sessions.py                # 读 WorkBuddy 本地会话库（任务列表）
 ├── parse_usage.py / scan_tasks.py# 其它数据源
 ├── deploy_to_kindle.py           # 部署插件到 Kindle（delete-first + 校验）
-├── bridge_watchdog.bat          # 看门狗：端口没监听就拉起桥
-├── _smoke_lua.py                 # 插件冒烟测试（lupa 真加载）
-├── credits.example.json         # 静态积分模板
-├── tasks.example.json           # 静态任务模板
-└── README.md
+├── workbuddy_bridge.vbs          # Windows 启动器（双击即起，含健康检查+失效弹窗）
+├── cookies.txt.example           # cookies.txt 模板与取 cookie 说明
+├── credits.example.json          # 静态积分模板
+├── tasks.example.json            # 静态任务模板
+├── assets/                       # README 用示例封面图
+├── landing/                      # 项目落地页（index.html + images）
+└── promo/                        # 宣传图生成脚本与样张
 ```
+
+> ⚠️ 已废弃的旧启动器 `run_bridge.bat` / `bridge_watchdog.bat` / `_smoke_lua.py` 不再随仓库分发，统一用 `workbuddy_bridge.vbs`。
 
 ## 安装
 
-### 1. 电脑端桥（Windows / macOS / Linux，Python 3.8+，无需 pip）
+### 1. 电脑端桥（Windows / macOS / Linux，Python 3.8+，需 Pillow）
 
 ```bash
 cd workbuddy-koreader-monitor
-python wb-bridge.py          # 监听 0.0.0.0:8765
+pip install pillow          # 仅此一个第三方依赖
+python wb-bridge.py         # 监听 0.0.0.0:8765
 ```
 
+**最简单（Windows）**：直接双击 `workbuddy_bridge.vbs` —— 它会自动找到本机 Python、释放被占用的 8765 端口、静默拉起桥，并用 `ServerXMLHTTP`（绕过系统代理对 127.0.0.1 的劫持）做健康检查，最后弹一个确认框。
+
 - 默认读 `credits.json` / `tasks.json`（用 `credits.example.json` / `tasks.example.json` 复制改名即可）。
-- 进阶：放一个 `cookies.txt`（WorkBuddy 网页登录后的 Cookie），桥会自动抓**实时积分**；Cookie 失效时自动回退静态数据。
+- **实时积分**：在目录里放一个 `cookies.txt`（WorkBuddy 网页登录后的 Cookie），桥会自动抓**实时积分**与**今日已用**；Cookie 失效时自动回退静态数据并在封面报警。详见 `cookies.txt.example`。
 - 可选鉴权：环境变量 `WB_TOKEN=xxx`，桥会要求 `Authorization: Bearer xxx`。
 
 ### 2. Kindle 端插件
@@ -84,9 +95,11 @@ python deploy_to_kindle.py --once   # 只试一次
 编辑 `workbuddy_monitor.koplugin/config.txt` 第 1 行，填电脑的桥地址：
 
 ```
-http://192.168.137.1:8765     # 电脑开热点时
+http://192.168.137.1:8765     # 电脑开热点时（手机/电脑共享热点给 Kindle）
 http://192.168.1.20:8765      # 同路由器时，填 PC 的 LAN IP
 ```
+
+> 同一 WiFi 下的 IP 是 DHCP 动态分配的，重连 / 休眠唤醒 / 路由器重启后可能变化；变了就在 PC 上 `ipconfig` 查 WLAN 的 IPv4 重新填并重新部署。KOReader 插件菜单里改过的地址优先级高于 `config.txt`。
 
 ### 4. 绑定手势（可选但推荐）
 
@@ -101,19 +114,34 @@ KOReader：`设置 → 手势 → 添加手势 → 画一个手势 → 动作列
 在 KOReader：`设置 → 屏幕 → 锁屏类型 = 随机图片`，`锁屏图片文件夹 =` 上面的 `wb_ss` 文件夹。
 点过「设置休眠壁纸」后，看板每次刷新都会把最新一张复制进去，锁屏即自动更新。
 
+## 登录失效了怎么办（重要）
+
+Cookie 是会话凭证，会过期（几天到几十天不等）。过期后桥**无法再静默假装正常**——它会明确报警：
+
+- **Kindle 封面**：顶部全宽反白报警条 `▲ 登录已失效 请刷新 cookies.txt`；`CREDITS` 徽标从 `LIVE` 变反白 `EXPIRED`；积分数保留最后已知值但明显是失效态。
+- **PC 端**：双击 `workbuddy_bridge.vbs` 启动后，若检测到失效会弹黄色警告框，提示更新 `cookies.txt`。
+
+恢复步骤（约 1 分钟）：
+1. 浏览器重新登录 `workbuddy.cn`（退出再登 / 等会话续期）。
+2. **取新 Cookie**：F12 → Network（网络）→ 刷新页面 → 点任意发往 `workbuddy.cn` 的请求 → 右侧 Headers → Request Headers → 找到 `cookie:` 那一行 → **右键 → Copy value**（复制整串）。
+3. 打开 `cookies.txt`，**只把第 1 行整行替换为新串**保存（文件里 `#` 开头的注释行会被自动忽略）。
+4. **双击 `workbuddy_bridge.vbs`** 重启桥接。封面报警条消失、徽标回到 `LIVE`、积分数重新跳动即恢复成功（Kindle 每 3 分钟自动刷新）。
+
+> 不要从「右击 → Copy as cURL」里摘 cookie——能用，但不如上面方法 1 干净。桥接**只认 `cookies.txt` 文件**，不再读 `WB_COOKIE` 环境变量。
+
 ## 开机自启（电脑端桥）
 
-- **登录时**：Startup 里的 `workbuddy_bridge.vbs` 拉起 `bridge_watchdog.bat`（隐藏窗口，不弹黑框）。
-- **兜底**：Windows 计划任务 `WB_Bridge_Watchdog` 每 **5 分钟**检查 8765 端口，没监听就重启桥；崩溃 / 重启后自愈。
-- ⚠️ 当前用的是**交互登录令牌**（InteractiveToken），即**用户登录之后**桥才会起来（≤5 分钟），不是登录前的系统级服务。若要「开机即启（含锁屏前）」，把计划任务改成 **SYSTEM 账户 + 启动触发器**即可。
+- **登录后自启**：把 `workbuddy_bridge.vbs` 快捷方式放进「启动」文件夹（Shell: `shell:startup`），登录后静默拉起桥。
+- **崩溃自愈**：可用 Windows 计划任务，触发器「登录时」调用该 vbs；或定时每 5 分钟检查 8765 端口（用 `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8765 -State Listen"` 判断）未监听则重启。
+- ⚠️ 以上均使用**交互登录令牌**，即**用户登录之后**桥才会起来（≤1 分钟），不是登录前的系统级服务。若要「开机即启（含锁屏前）」，把计划任务改成 **SYSTEM 账户 + 启动触发器**。
 
 ## 隐私与凭据
 
 以下文件含凭据 / 个人数据，**已写入 `.gitignore`，绝不会进仓库**：
 
-`cookies.txt` · `config.js` · `wb_account.json` · `credits_cache.json` · `plans_usage.html`
+`cookies.txt` · `credits_cache.json` · `config.js` · `index.js` · `plans_usage.html` · `wb_account.json` · `bridge*.log`
 
-桥默认只监听局域网；可选 `WB_TOKEN` 做简单 Bearer 鉴权。
+桥默认只监听局域网；可选 `WB_TOKEN` 做简单 Bearer 鉴权。Cookie 仅用于本地拉取你自己的 WorkBuddy 数据，不上传任何第三方。
 
 ## 常见问题
 
@@ -125,6 +153,9 @@ A：常驻看板每 3 分钟主动重新拉图，时间戳（`SYNC <时间>`）�
 
 **Q：Kindle 上点不动 / 只能重启？**
 A：旧版曾因设备休眠吞掉触摸导致，现已在常驻期间暂停自动待机解决。
+
+**Q：封面显示 EXPIRED / 报警条？**
+A：Cookie 过期了，按上面「登录失效了怎么办」刷新 `cookies.txt` 即可。
 
 ## License
 
