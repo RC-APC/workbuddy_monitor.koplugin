@@ -1,3 +1,5 @@
+[English](README_EN.md)
+
 # WorkBuddy KOReader Monitor
 
 把 [WorkBuddy](https://workbuddy.cn) 智能体的 **积分余额 / 任务进度**，实时投到 **Kindle / KOReader 墨水屏**上，做成一个**常驻看板**。电脑端跑一个仅用标准库的小桥（HTTP 服务），Kindle 端装一个 KOReader 插件，两者用局域网通信。
