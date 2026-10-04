@@ -1,6 +1,6 @@
 # WorkBuddy KOReader Monitor - clean distribution package
-# Generated 2026-10-04 21:43
-# 39 files (no cookies / logs / caches / secrets)
+# Generated 2026-10-04 21:52
+# 22 files - no cookies / logs / caches / secrets / landing / promo
 
 .gitignore
 LICENSE
@@ -15,24 +15,7 @@ cover_gen.py
 credits.example.json
 deploy_to_kindle.py
 fetch_credits.py
-landing/images/cover.png
-landing/images/dashboard.png
-landing/images/dashboard_dark.png
-landing/images/dashboard_light.png
-landing/images/mode_dark.png
-landing/images/mode_light.png
-landing/index.html
 parse_usage.py
-promo/gen_promo_dashboard.py
-promo/make_modes.py
-promo/make_promo.py
-promo/promo_mode_dark.png
-promo/promo_mode_light.png
-promo/promo_showcase.png
-promo/promo_xhs_cover(1).png
-promo/promo_xhs_cover.png
-promo/公众号文案.md
-promo/小红书文案.md
 scan_tasks.py
 tasks.example.json
 wb-bridge.py

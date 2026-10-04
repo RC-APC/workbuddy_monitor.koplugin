@@ -57,9 +57,8 @@ workbuddy-koreader-monitor/
 ├── cookies.txt.example           # cookies.txt template + how to grab the cookie
 ├── credits.example.json          # static credits template
 ├── tasks.example.json            # static tasks template
-├── assets/                       # example cover images used in this README
-├── landing/                      # project landing page (index.html + images)
-└── promo/                        # promo image generators + samples
+├── assets/                       # example cover images (dark / light)
+└── README.md / README_EN.md      # Chinese / English docs
 ```
 
 > ⚠️ The old launchers `run_bridge.bat` / `bridge_watchdog.bat` / `_smoke_lua.py` are no longer shipped; use `workbuddy_bridge.vbs`.

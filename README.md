@@ -56,9 +56,8 @@ workbuddy-koreader-monitor/
 ├── cookies.txt.example           # cookies.txt 模板与取 cookie 说明
 ├── credits.example.json          # 静态积分模板
 ├── tasks.example.json            # 静态任务模板
-├── assets/                       # README 用示例封面图
-├── landing/                      # 项目落地页（index.html + images）
-└── promo/                        # 宣传图生成脚本与样张
+├── assets/                       # 示例封面图（深/浅配色）
+└── README.md / README_EN.md      # 中英文文档
 ```
 
 > ⚠️ 已废弃的旧启动器 `run_bridge.bat` / `bridge_watchdog.bat` / `_smoke_lua.py` 不再随仓库分发，统一用 `workbuddy_bridge.vbs`。
