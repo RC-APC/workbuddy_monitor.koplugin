@@ -118,6 +118,27 @@ local function get_ltn12()
     if not ok or not ltn12 then return nil end
     return ltn12
 end
+-- Fast TCP reachability probe for the bridge. LuaSocket is single-threaded so
+-- this STILL blocks the UI, but only for `probe_timeout` seconds (default 2)
+-- instead of the full 12s cover download -- so an unreachable or half-dead
+-- bridge no longer freezes the UI for 12s on every auto-refresh. Returns true
+-- when the port answers within the window (or when we can't even load the
+-- socket module: in that case we optimistically proceed and let the real
+-- request fail with its own error path).
+local function bridge_reachable(base, probe_timeout)
+    local ok, socket = pcall(require, "socket")
+    if not (ok and socket and socket.tcp) then return true end
+    local host, port = tostring(base or ""):match("^https?://([^:/]+):?(%d*)")
+    if not host then return true end
+    port = (port and port ~= "") and tonumber(port) or 8765
+    probe_timeout = probe_timeout or 2
+    local c = socket.tcp()
+    if not c then return true end
+    c:settimeout(probe_timeout)
+    local r = c:connect(host, port)
+    pcall(function() c:close() end)
+    return r == 1
+end
 -- KOReader bundles "json"; some builds also have "cjson". Try both.
 local function json_decode(s)
     local ok, mod = pcall(require, "cjson")
@@ -181,6 +202,9 @@ function WorkBuddyMonitor:init()
             -- (hotkey support was removed: unusable on touch-only devices)
         end
     end
+    -- Clean up any stale wb_cover_*.png left behind by earlier sessions
+    -- (plugin reload / crash loses the _last_cover pointer and they pile up).
+    pcall(function() self:_sweepCache() end)
     -- Publish our two actions to KOReader's Dispatcher so they can be bound
     -- to a gesture: 设置 -> 手势 -> 添加手势 -> 动作 -> "WorkBuddy ...".
     self:onDispatcherRegisterActions()
@@ -223,6 +247,14 @@ function WorkBuddyMonitor:onDispatcherRegisterActions()
             device = true,
             separator = false,
         })
+        Dispatcher:registerAction("workbuddy_clear_cache", {
+            category = "none",
+            event = "WorkBuddyClearCache",
+            title = "WorkBuddy 清理看板缓存",
+            general = true,
+            device = true,
+            separator = false,
+        })
     end)
     -- NOTE: standby auto-refresh is intentionally NOT started here. The user
     -- only asked for the standby picture to be readable (dark on light), not
@@ -250,6 +282,21 @@ end
 -- Gesture handler: arm the lock-screen cover and generate it now.
 function WorkBuddyMonitor:onWorkBuddySetLock()
     self:updateLockScreenFile(true)
+    return true
+end
+
+-- Gesture/menu handler: delete stale wb_cover_*.png files (the unique-named
+-- cached covers that accumulate after plugin reloads/crashes and keep showing
+-- an "EXPIRED" picture). Reports how many were removed.
+function WorkBuddyMonitor:onWorkBuddyClearCache()
+    local removed = 0
+    pcall(function() removed = self:_sweepCache() end)
+    UIManager:show(InfoMessage:new{
+        text = removed > 0
+            and string.format("已清理 %d 个失效的看板缓存文件。", removed)
+            or "看板缓存已是最新，没有需要清理的残留文件。",
+        timeout = 2,
+    })
     return true
 end
 
@@ -299,6 +346,7 @@ function WorkBuddyMonitor:addToMainMenu(menu_items)
             { text = "✕ 退出常驻看板", callback = function() self:exitDashboard() end },
             lock_submenu,
             self._modeItem,
+            { text = "清理看板缓存 (删除失效封面)", callback = function() self:onWorkBuddyClearCache() end },
             { text = "设置桥地址 (IP:端口)", callback = function() self:configure() end },
         },
     }
@@ -311,6 +359,9 @@ end
 -- can run while asleep, so on wake-up pull a fresh cover immediately instead
 -- of waiting for the next 3-minute tick.
 function WorkBuddyMonitor:onResume()
+    -- Clean stale cached covers on wake too (the device may have been off for
+    -- days and the data dir could hold many expired wb_cover_*.png files).
+    pcall(function() self:_sweepCache() end)
     -- Keep the lock-screen cover file fresh on wake (network is up here),
     -- but only if the user has armed it via "设置休眠壁纸".
     pcall(function() self:_updateLockFile() end)
@@ -754,6 +805,24 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
     if not http or not ltn12 then
         self:_showBoard(true, quiet); return
     end
+    -- Reachability pre-check: if the bridge is down we must NOT spend the full
+    -- 12s download window freezing the UI. Skip the download, keep the last
+    -- good cover, and back off longer (60s) so we don't re-freeze every 20s
+    -- while the bridge is genuinely unreachable.
+    if not bridge_reachable(BRIDGE_BASE, 2) then
+        logger.dbg("WorkBuddyMonitor bridge unreachable, skipping download")
+        if self._last_cover and is_png(self._last_cover) then
+            if not self._exiting then
+                self.refresh_timer = UIManager:scheduleIn(60, function()
+                    self:_showImage(true, true)
+                end)
+            end
+            return   -- leave the current (good) cover on screen
+        end
+        -- nothing cached yet -> surface the error board (its own pre-check
+        -- skips the 8s fetch when the bridge is down)
+        self:_showBoard(true, quiet); return
+    end
     local w = Device.screen:getWidth()
     local h = Device.screen:getHeight()
     -- NEVER reuse a fixed file name. KOReader's image renderer caches the
@@ -793,6 +862,8 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
         end
         self._last_cover = path
         self:_updateLockFile()
+        -- drop any older wb_cover_*.png we just superseded
+        pcall(function() self:_sweepCache() end)
     else
         self:_discardTmp(tmp)
         logger.dbg("WorkBuddyMonitor cover fetch failed: " .. tostring(derr))
@@ -886,7 +957,14 @@ function WorkBuddyMonitor:_showBoard(auto, quiet)
     auto = auto or false
     self:_cancelTimer()
     local my_gen = self._gen
-    local data, err = fetch_json(status_url())
+    local data, err
+    -- Avoid an 8s blocking fetch when the bridge is plainly unreachable: build
+    -- the (already-supported) error board from a static message instead.
+    if not bridge_reachable(BRIDGE_BASE, 2) then
+        err = "PC bridge 未运行 / 网络不可达 (8765)"
+    else
+        data, err = fetch_json(status_url())
+    end
     if self._exiting or self._gen ~= my_gen then return end
     -- Drop the previous board BEFORE building its replacement. Without this,
     -- falling back from the image mode stacked a SECOND board on top of the
@@ -995,6 +1073,56 @@ function WorkBuddyMonitor:_newCoverPath()
     self._cover_seq = (self._cover_seq or 0) + 1
     return string.format("%s/wb_cover_%d_%d.png",
                          self:_cacheDir(), os.time(), self._cover_seq)
+end
+
+-- Delete stale cached cover PNGs. Each refresh writes a UNIQUE wb_cover_*.png
+-- (KOReader memoises decoded bitmaps per path, so names can't be reused), and
+-- only the immediate previous one is removed via _last_cover. After a plugin
+-- reload or crash the _last_cover pointer is gone, so old files -- which often
+-- still show an "EXPIRED" cover from when cookies lapsed -- pile up in the
+-- KOReader data dir and never get cleaned. This sweep keeps only the current
+-- file (or, right after a restart, the single newest by mtime) and also scrubs
+-- leftover .tmp scratch downloads. Returns how many files were removed.
+function WorkBuddyMonitor:_sweepCache()
+    local dir = self:_cacheDir()
+    local ok, lfs = pcall(require, "libs/libkoreader-lfs")
+    if not (ok and lfs and lfs.dir and lfs.attributes) then return 0 end
+    local keep = self._last_cover
+    local items = {}
+    pcall(function()
+        for name in lfs.dir(dir) do
+            if name ~= "." and name ~= ".." then
+                if name:match("^wb_cover_%d+_%d+%.png$") or
+                   name:match("^wb_cover_%d+_%d+%.png%.tmp$") then
+                    local full = dir .. "/" .. name
+                    local a = lfs.attributes(full)
+                    if a and a.mode == "file" then
+                        items[#items + 1] = { path = full, mtime = a.modification or 0 }
+                    end
+                end
+            end
+        end
+    end)
+    if #items == 0 then return 0 end
+    if not keep then
+        -- after a restart we have no pointer: keep the newest, drop the rest.
+        -- Prefer a real cover over a leftover .tmp scratch (a .tmp only exists
+        -- mid-download, so it's never the file we actually displayed).
+        table.sort(items, function(x, y) return x.mtime > y.mtime end)
+        keep = items[1].path
+        for _, it in ipairs(items) do
+            if not it.path:match("%.tmp$") then keep = it.path; break end
+        end
+    end
+    local removed = 0
+    for _, it in ipairs(items) do
+        if it.path ~= keep then
+            if pcall(function() os.remove(it.path) end) then
+                removed = removed + 1
+            end
+        end
+    end
+    return removed
 end
 
 -- ---- lock-screen cover FILE (user points KOReader at it manually) ---------
