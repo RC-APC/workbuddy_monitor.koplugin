@@ -173,7 +173,19 @@ def build_status():
         "credits": credits,
         "tasks": merged,
         "taskMeta": session_meta,
+        # surfaced so a missing-Pillow runtime (e.g. a bare managed
+        # pythonw that lacks the module) is visible instead of producing
+        # silent cover-render failures. The double-click vbs reads this too.
+        "pillow": _have_pillow(),
     }
+
+
+def _have_pillow():
+    try:
+        import importlib.util as _u
+        return _u.find_spec("PIL") is not None
+    except Exception:
+        return False
 
 
 def _deny(handler):
