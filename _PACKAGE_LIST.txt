@@ -1,5 +1,5 @@
 # WorkBuddy KOReader Monitor - clean distribution package
-# Generated 2026-10-04 21:52
+# Generated 2026-10-06 12:13
 # 22 files - no cookies / logs / caches / secrets / landing / promo
 
 .gitignore

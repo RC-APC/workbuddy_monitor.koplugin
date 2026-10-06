@@ -435,6 +435,9 @@ function WorkBuddyMonitor:exitDashboard()
     self:_cancelTimer()
     self:_closeAllBoards()
     self:_keepAwake(false)
+    -- Nothing is on screen any more, so the outgoing picture no longer needs
+    -- protecting: drop the reference so the next sweep can reclaim the file.
+    self._prev_cover = nil
     -- Sweep again shortly: covers the "download finished after the tap" case,
     -- where a widget is created a second or two AFTER this function returns.
     local plugin = self
@@ -825,6 +828,11 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
     end
     local w = Device.screen:getWidth()
     local h = Device.screen:getHeight()
+    -- Safe point to drop leftovers: the previous frame finished displaying long
+    -- ago, so nothing the renderer still needs is on disk any more. Keep both
+    -- the picture currently on screen (_last_cover) and the one it replaced
+    -- (_prev_cover) so a decode still in flight can never lose its file.
+    pcall(function() self:_sweepCache() end)
     -- NEVER reuse a fixed file name. KOReader's image renderer caches the
     -- decoded bitmap under a hash of (path, width, height) -- it does NOT look
     -- at the file's mtime. So downloading fresh bytes into wb_cover.png over
@@ -856,14 +864,20 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
             path = tmp
         end
         self._fail_count = 0
-        -- unique names would pile up: drop the previous one
-        if self._last_cover and self._last_cover ~= path then
-            pcall(function() os.remove(self._last_cover) end)
-        end
+        -- Do NOT delete the outgoing picture here: ImageWidget may still be
+        -- decoding it, and removing the file mid-decode makes the refresh fail
+        -- (the board then keeps showing the old credits). _prev_cover keeps it
+        -- protected and the sweep at the top of the NEXT refresh reclaims it,
+        -- by which time nothing references it any more.
+        self._prev_cover = self._last_cover   -- still on screen until we swap
         self._last_cover = path
         self:_updateLockFile()
-        -- drop any older wb_cover_*.png we just superseded
-        pcall(function() self:_sweepCache() end)
+        -- NOTE: do NOT sweep here. ImageWidget decodes lazily/asynchronously,
+        -- so the picture we are replacing (and the one we are about to show)
+        -- may still be being read by the renderer. Deleting those files at this
+        -- point made the refresh silently fail and froze the board on a stale
+        -- credits number. The sweep runs at the START of the next refresh,
+        -- once the previous frame is long done (see _showImage).
     else
         self:_discardTmp(tmp)
         logger.dbg("WorkBuddyMonitor cover fetch failed: " .. tostring(derr))
@@ -1087,7 +1101,14 @@ function WorkBuddyMonitor:_sweepCache()
     local dir = self:_cacheDir()
     local ok, lfs = pcall(require, "libs/libkoreader-lfs")
     if not (ok and lfs and lfs.dir and lfs.attributes) then return 0 end
-    local keep = self._last_cover
+    -- PROTECTED set: the picture on screen, the one it just replaced (its
+    -- decode may still be in flight), and the lock-screen mirror's source.
+    -- Deleting any of these makes the renderer fail and the board freeze on a
+    -- stale number, so they are never swept.
+    local protect = {}
+    for _, p in ipairs({ self._last_cover, self._prev_cover }) do
+        if p then protect[p] = true end
+    end
     local items = {}
     pcall(function()
         for name in lfs.dir(dir) do
@@ -1095,31 +1116,48 @@ function WorkBuddyMonitor:_sweepCache()
                 if name:match("^wb_cover_%d+_%d+%.png$") or
                    name:match("^wb_cover_%d+_%d+%.png%.tmp$") then
                     local full = dir .. "/" .. name
-                    local a = lfs.attributes(full)
-                    if a and a.mode == "file" then
-                        items[#items + 1] = { path = full, mtime = a.modification or 0 }
+                    if not protect[full] then
+                        local a = lfs.attributes(full)
+                        if a and a.mode == "file" then
+                            items[#items + 1] = { path = full, mtime = a.modification or 0 }
+                        end
                     end
                 end
             end
         end
     end)
     if #items == 0 then return 0 end
-    if not keep then
-        -- after a restart we have no pointer: keep the newest, drop the rest.
-        -- Prefer a real cover over a leftover .tmp scratch (a .tmp only exists
-        -- mid-download, so it's never the file we actually displayed).
-        table.sort(items, function(x, y) return x.mtime > y.mtime end)
-        keep = items[1].path
+    -- Nothing referenced (fresh start / after a restart): keep the newest real
+    -- cover so a still-valid picture is not thrown away, drop the rest.
+    local doomed = items
+    if not (self._last_cover or self._prev_cover) then
+        -- linear max scan (no reliance on table.sort stability)
+        local keep, keep_mtime = nil, -1
         for _, it in ipairs(items) do
-            if not it.path:match("%.tmp$") then keep = it.path; break end
+            if not it.path:match("%.tmp$") then
+                if it.mtime > keep_mtime then
+                    keep, keep_mtime = it.path, it.mtime
+                end
+            end
+        end
+        if keep == nil then   -- only .tmp files present
+            for _, it in ipairs(items) do
+                if it.mtime > keep_mtime then
+                    keep, keep_mtime = it.path, it.mtime
+                end
+            end
+        end
+        -- doomed = everything EXCEPT the one keeper. (Building the keeper list
+        -- and assigning it back to `items` deleted the survivor itself.)
+        doomed = {}
+        for _, it in ipairs(items) do
+            if it.path ~= keep then doomed[#doomed + 1] = it end
         end
     end
     local removed = 0
-    for _, it in ipairs(items) do
-        if it.path ~= keep then
-            if pcall(function() os.remove(it.path) end) then
-                removed = removed + 1
-            end
+    for _, it in ipairs(doomed) do
+        if pcall(function() os.remove(it.path) end) then
+            removed = removed + 1
         end
     end
     return removed

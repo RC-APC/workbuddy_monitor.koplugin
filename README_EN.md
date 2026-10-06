@@ -152,7 +152,13 @@ A: First check the PC-side `bridge.log` for `REQ from <Kindle IP>`. None means t
 A: The persistent board re-pulls the image every 3 minutes, so the timestamp (`SYNC <time>`) changes with it; if it doesn't, the bridge likely isn't receiving requests (see above).
 
 **Q: The Kindle is unresponsive / only a reboot fixes it?**
-A: An older build let device sleep swallow touches; that's now fixed by pausing auto-suspend while the board is up.
+A: An older build let device sleep swallow touches; that's now fixed by pausing auto-suspend while the board is up. Each refresh still pulls the cover synchronously on KOReader's single main thread, so the new build first does a 2-second TCP reachability probe: if the bridge is down it keeps the current cover and backs off for 60 seconds instead of freezing every 20 seconds.
+
+**Q: `wb_cover_*.png` files pile up in the koreader directory?**
+A: Every refresh writes a uniquely-named cover cache (KOReader memoises decoded bitmaps per path, so names can't be reused), and the previous one is removed. But after a plugin reload or crash the `_last_cover` pointer is lost, so old `EXPIRED` covers linger forever. The build now sweeps automatically at plugin start, on wake, and at the start of each refresh — it keeps only the picture on screen plus the one it just replaced (`ImageWidget` decodes lazily, so deleting too early makes the refresh silently fail) and reclaims everything else including `.tmp` scratch files; with no pointer left (i.e. right after a restart) it keeps the newest by mtime. To do it by hand: menu `WorkBuddy Monitor → 清理看板缓存 (删除失效封面)`, or bind the gesture `WorkBuddy 清理看板缓存`.
+
+**Q: The credits number / `SYNC` time is frozen on a stale value?**
+A: Work out which side is at fault first. Open `http://127.0.0.1:8765/status.json` on the PC: if `credits.remaining` and `updatedAt` are fresh, the bridge and scraping are fine and the problem is on the Kindle's display side. One defect that caused exactly this is now fixed — the auto-sweep used to delete the cover *while it was still being decoded* (`ImageWidget` decodes lazily/asynchronously, and a missing file makes the swap fail), so a freshly downloaded PNG was never shown. The build now deletes nothing right after a download; the sweep runs at the start of the next refresh and additionally protects `_prev_cover`. If it still doesn't refresh, fully quit and restart KOReader on the Kindle (the plugin must be reloaded to pick up new logic) and make sure `main.lua` in the plugin directory was actually overwritten.
 
 **Q: The cover shows EXPIRED / an alert bar?**
 A: The cookie expired — refresh `cookies.txt` as described in "What if the login expires".
