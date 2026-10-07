@@ -2,7 +2,7 @@
 
 # WorkBuddy KOReader Monitor
 
-Cast your [WorkBuddy](https://workbuddy.cn) agent's **credit balance / task progress** onto a **Kindle / KOReader e-ink screen** as a persistent dashboard. A tiny bridge on the PC (standard-library + Pillow HTTP server) talks to a KOReader plugin on the Kindle over the local network.
+Cast your [WorkBuddy](https://workbuddy.cn) agent's **credit balance / task progress** onto a **Kindle / KOReader e-ink screen** as a persistent dashboard. A tiny bridge on the PC (standard-library + Pillow HTTP server) talks to a KOReader plugin on the Kindle — over the same WiFi (LAN direct), or cross-network via a GitHub snapshot for remote viewing (the Kindle can read it from anywhere).
 
 > Use case: you have a dusty Kindle and want to glance at "how many credits are left this month, which tasks are running, which are about to expire" on the e-ink screen — no phone, no laptop, just a look.
 
@@ -54,6 +54,8 @@ workbuddy-koreader-monitor/
 ├── parse_usage.py / scan_tasks.py# other data sources
 ├── deploy_to_kindle.py           # deploy plugin to Kindle (delete-first + verify)
 ├── workbuddy_bridge.vbs          # Windows launcher (double-click; health check + expiry popup)
+├── publish_snapshot.py           # remote snapshot push (view from outside the LAN, see "Remote viewing")
+├── publish.ini.example           # remote snapshot config template (copy to publish.ini)
 ├── cookies.txt.example           # cookies.txt template + how to grab the cookie
 ├── credits.example.json          # static credits template
 ├── tasks.example.json            # static tasks template
@@ -77,7 +79,6 @@ python wb-bridge.py         # listens on 0.0.0.0:8765
 
 - Reads `credits.json` / `tasks.json` by default (copy `credits.example.json` / `tasks.example.json` and rename).
 - **Live credits**: drop a `cookies.txt` (the cookie after logging into WorkBuddy in the browser) and the bridge auto-fetches **live credits** and **today's usage**; on cookie expiry it falls back to static data and alerts on the cover. See `cookies.txt.example`.
-- Optional auth: env var `WB_TOKEN=xxx` makes the bridge require `Authorization: Bearer xxx`.
 
 ### 2. Kindle-side plugin
 
@@ -139,9 +140,67 @@ Recovery (about 1 minute):
 
 The following files contain credentials / personal data and are **already in `.gitignore` — they never enter the repo**:
 
-`cookies.txt` · `credits_cache.json` · `config.js` · `index.js` · `plans_usage.html` · `wb_account.json` · `bridge*.log`
+`cookies.txt` · `credits_cache.json` · `config.js` · `index.js` · `plans_usage.html` · `wb_account.json` · `bridge*.log` · `publish.ini`
 
-The bridge listens on the LAN only by default; optional `WB_TOKEN` provides simple Bearer auth. The cookie is used only to pull your own WorkBuddy data locally and is not uploaded to any third party.
+The bridge listens on the LAN only by default. The cookie is used only to pull your own WorkBuddy data locally and is not uploaded to any third party.
+
+## Remote mode (cross-network, recommended)
+
+**Remote mode** is for "the Kindle and PC are not on the same WiFi, or you want to peek at the board while away": the PC periodically pushes the rendered cover to the cloud and the Kindle reads a fixed https URL — the two sides never need to be on the same network. Compared with LAN direct, it needs no public IP, no port forwarding, no tunnel, and the board keeps showing the last snapshot after the PC goes offline.
+
+```
+PC bridge (local, outbound only)  --push-->  GitHub repo  --raw-->  Kindle on any network
+```
+
+| | LAN direct | Remote snapshot |
+|---|---|---|
+| Bridge URL | `http://192.168.x.x:8765` | `https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+| Freshness | live (3-min refresh) | last push (every 10 min by default) |
+| PC needs | same network as Kindle | internet access only — no public IP, no port forwarding, no tunnel |
+| PC off | board shows an error | keeps showing the last snapshot |
+
+**One-time setup (~3 min)**
+
+1. Create an empty GitHub repo; pick a random name (e.g. `wb-board-xxxxxx`). Public is fine — private repos on the free plan cannot be raw-linked anonymously.
+2. Create a fine-grained token: Repository access = that one repo, permission `Contents: Read and write`.
+3. Copy `publish.ini.example` to `publish.ini` and fill in `owner` / `repo` / `token`.
+4. Verify and get the URL:
+```bash
+python publish_snapshot.py --check            # verify repo + token, print the URL for the Kindle
+python publish_snapshot.py --once --dry-run   # fetch a cover without uploading
+python publish_snapshot.py --once             # push once for real
+python publish_snapshot.py --loop             # keep pushing (every 600s / 10 min by default)
+```
+5. On the Kindle, 设置桥地址 = `https://raw.githubusercontent.com/<owner>/<repo>/<branch>` (the plugin appends `/cover.png`).
+
+**The repo does not bloat (handled automatically)**
+
+`history = single` in `publish.ini` (the default) pushes through the Git Database API: each push builds a tree with just those two files, creates a **parentless commit**, and force-moves the branch to it. Result:
+
+- History stays at **exactly 1 commit**; old objects become unreachable and GitHub GCs them → constant repo size, **no manual cleanup ever**.
+- Identical content produces no commit at all.
+- The public raw URL **never changes**, so the Kindle setup is unaffected.
+
+Switch to `history = append` only if you actually want the history (then expect ~144 commits/day at the default 600s interval, needing periodic manual cleanup).
+
+**Notes**
+
+- Remote mode uses `https`, which needs `ssl.https` (lua-sec) in KOReader. Almost every build ships it; if not, the error board shows `https 支持: 不可用 (缺 ssl.https 模块)`.
+- The default `interval` is 600s (10 min); no need to go lower. Under `history = single` the interval only affects API usage, not repo size.
+- `publish_snapshot.vbs` starts the pusher silently in the background (double-click = `--loop`); output goes to `publish.log` (the script writes it itself, because `pythonw` has no console).
+- You see a **snapshot**, not a live frame; the last push survives the PC going offline.
+
+### Autostart (remote board recovers after reboot)
+
+For a stable long-term remote setup the key is not "start it once by hand" but "it comes back on its own after a reboot". Verified in practice: after the two steps below, within ~1 minute of a Windows reboot the bridge and pusher come back up automatically and the Kindle board recovers with no manual step.
+
+1. **Bridge autostart**: put a shortcut to `workbuddy_bridge.vbs` into the Startup folder (`Win+R` → run `shell:startup`). After logon it auto-locates Python, frees port 8765, silently launches the bridge, and health-checks it via `ServerXMLHTTP`.
+   - ⚠️ The bridge MUST run inside the user's interactive logon session — it needs to read `~/.workbuddy/workbuddy.db` to get the "space · task name". Run under SYSTEM / a session with no desktop and it can't read the DB, so task names degrade to browser-op names like "对话 / 上下文压缩". Use "start after logon"; do not make it a system-level service.
+2. **Pusher autostart**: also put a shortcut to `publish_snapshot.vbs` into the Startup folder. It silently runs `publish_snapshot.py --loop` in the background and keeps pushing covers to the snapshot repo at `interval`.
+
+> With both in the Startup folder, the whole chain (bridge renders → pusher uploads → Kindle pulls the raw URL) closes automatically after every boot — exactly the "still shows up after a reboot" state.
+
+- The repo is Public: only someone with the URL can reach it, but **task names and your credit balance are drawn onto that PNG**. If that bothers you, use a sufficiently random repo name and set `push_status = false` in `publish.ini` to skip the JSON.
 
 ## FAQ
 

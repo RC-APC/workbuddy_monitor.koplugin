@@ -20,8 +20,8 @@ emits one task per active sub-project with:
   - detail   : "<n> files, <x>h ago" -- the raw real signal
 
 This is a genuine activity signal, not a hallucinated percent. If you later wire
-up a real task tracker (e.g. a WorkBuddy task API, or push via POST /report),
-replace generate_tasks() or merge with _reported in wb-bridge.py.
+up a real task tracker (e.g. a WorkBuddy task API) that reports true completion,
+replace generate_tasks() with it in wb-bridge.py.
 
 Usage
 -----

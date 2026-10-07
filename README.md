@@ -2,7 +2,7 @@
 
 # WorkBuddy KOReader Monitor
 
-把 [WorkBuddy](https://workbuddy.cn) 智能体的 **积分余额 / 任务进度**，实时投到 **Kindle / KOReader 墨水屏**上，做成一个**常驻看板**。电脑端跑一个仅用标准库的小桥（HTTP 服务），Kindle 端装一个 KOReader 插件，两者用局域网通信。
+把 [WorkBuddy](https://workbuddy.cn) 智能体的 **积分余额 / 任务进度**，实时投到 **Kindle / KOReader 墨水屏**上，做成一个**常驻看板**。电脑端跑一个仅用标准库的小桥（HTTP 服务），Kindle 端装一个 KOReader 插件——**同一 WiFi 下局域网直连**，或**走 GitHub 快照实现跨网络远程查看**（Kindle 出门在外也能看）。
 
 > 适用场景：你有一台吃灰的 Kindle，想在墨水屏上随时看到「这个月积分还剩多少、哪些任务在跑、哪些快到期」——不点亮手机、不打开电脑，翻一眼就行。
 
@@ -53,6 +53,9 @@ workbuddy-koreader-monitor/
 ├── parse_usage.py / scan_tasks.py# 其它数据源
 ├── deploy_to_kindle.py           # 部署插件到 Kindle（delete-first + 校验）
 ├── workbuddy_bridge.vbs          # Windows 启动器（双击即起，含健康检查+失效弹窗）
+├── publish_snapshot.py           # 远程快照推送（局域网外也能看，见「远程查看」）
+├── publish_snapshot.vbs          # 推送启动器（双击后台静默常驻 --loop）
+├── publish.ini.example           # 远程快照配置模板（复制为 publish.ini 填写）
 ├── cookies.txt.example           # cookies.txt 模板与取 cookie 说明
 ├── credits.example.json          # 静态积分模板
 ├── tasks.example.json            # 静态任务模板
@@ -76,7 +79,6 @@ python wb-bridge.py         # 监听 0.0.0.0:8765
 
 - 默认读 `credits.json` / `tasks.json`（用 `credits.example.json` / `tasks.example.json` 复制改名即可）。
 - **实时积分**：在目录里放一个 `cookies.txt`（WorkBuddy 网页登录后的 Cookie），桥会自动抓**实时积分**与**今日已用**；Cookie 失效时自动回退静态数据并在封面报警。详见 `cookies.txt.example`。
-- 可选鉴权：环境变量 `WB_TOKEN=xxx`，桥会要求 `Authorization: Bearer xxx`。
 
 ### 2. Kindle 端插件
 
@@ -138,9 +140,67 @@ Cookie 是会话凭证，会过期（几天到几十天不等）。过期后桥*
 
 以下文件含凭据 / 个人数据，**已写入 `.gitignore`，绝不会进仓库**：
 
-`cookies.txt` · `credits_cache.json` · `config.js` · `index.js` · `plans_usage.html` · `wb_account.json` · `bridge*.log`
+`cookies.txt` · `credits_cache.json` · `config.js` · `index.js` · `plans_usage.html` · `wb_account.json` · `bridge*.log` · `publish.ini`
 
-桥默认只监听局域网；可选 `WB_TOKEN` 做简单 Bearer 鉴权。Cookie 仅用于本地拉取你自己的 WorkBuddy 数据，不上传任何第三方。
+桥默认只监听局域网。Cookie 仅用于本地拉取你自己的 WorkBuddy 数据，不上传任何第三方。
+
+## 远程模式（跨网络，推荐）
+
+**远程模式**适合「Kindle 和 PC 不在同一 WiFi、或出门在外也想看看板」的场景：PC 定时把渲染好的封面推送到云端，Kindle 读一个固定的 https 地址，两端不必在同一网络。相比局域网直连，它免公网 IP / 端口映射 / 内网穿透，PC 关机后看板仍显示最后一次快照。
+
+```
+PC 桥（本地，只出站）  --定时推送-->  GitHub 仓库  --直链-->  任意网络下的 Kindle
+```
+
+| | 局域网直连 | 远程快照 |
+|---|---|---|
+| 桥地址 | `http://192.168.x.x:8765` | `https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+| 实时性 | 实时（3 分钟刷新） | 最近一次推送（默认每 10 分钟） |
+| PC 要求 | 与 Kindle 同一网络 | 能上网即可，不需要公网 IP / 端口映射 / 穿透 |
+| PC 关机 | 看板报错 | 继续显示最后一次快照 |
+
+**一次性准备（约 3 分钟）**
+
+1. 建一个 GitHub 空仓库，仓库名建议用一段随机字符串（如 `wb-board-xxxxxx`），Public 即可——免费账号的私有仓库无法匿名直链。
+2. 开一个 fine-grained token：Repository access 只选这一个仓库，权限 `Contents: Read and write`。
+3. 复制 `publish.ini.example` 为 `publish.ini`，填 `owner` / `repo` / `token`。
+4. 验证并拿到地址：
+```bash
+python publish_snapshot.py --check            # 验证仓库与 token，打印 Kindle 该填的地址
+python publish_snapshot.py --once --dry-run   # 取一次封面但不上传
+python publish_snapshot.py --once             # 真推一次
+python publish_snapshot.py --loop             # 持续推送（默认每 600 秒 / 10 分钟）
+```
+5. Kindle 端「设置桥地址」填 `https://raw.githubusercontent.com/<owner>/<repo>/<branch>`（插件会自动拼上 `/cover.png`）。
+
+**仓库不会膨胀（默认自动处理）**
+
+`publish.ini` 的 `history = single`（默认）会走 Git Database API：每次推送用「只含这两个文件的 tree」建一个 **无父 commit**，再强制把分支指过去。结果：
+
+- 历史长度**恒定 1 个 commit**，旧对象不可达后由 GitHub 回收 → 体积恒定，**永远不用手动清理**。
+- 内容没变化时不产生 commit。
+- 公开的 raw 直链**始终不变**，Kindle 端不受影响。
+
+想保留完整历史才改 `history = append`（那时默认 600 秒间隔下约 144 commit/天，需要定期手动清）。
+
+**注意**
+
+- 远程模式走 `https`，要求 KOReader 自带 `ssl.https`（lua-sec）。绝大多数版本都有；万一没有，看板报错页会显示 `https 支持: 不可用 (缺 ssl.https 模块)`。
+- `interval` 默认 600 秒（10 分钟）即可；`history = single` 下推送频率只影响 API 用量，不再影响仓库体积。
+- 想常驻推送就双击 `publish_snapshot.vbs`（后台静默跑 `--loop`）；日志在 `publish.log`（由脚本自己写，因为 `pythonw` 没有控制台）。
+- 远程看到的是**快照**不是实时画面；PC 关机后保留最后一次推送的内容。
+
+### 开机自启（重启后远程看板自动恢复）
+
+远程模式要长期稳定，关键不是「手动起一次」，而是**重启电脑后无需任何操作就能自动续上**。已实测：按下面两步配置后，Windows 重启后约 1 分钟内桥与发布器自动拉起，Kindle 端看板自动恢复，无需人工干预。
+
+1. **桥自启**：把 `workbuddy_bridge.vbs` 的快捷方式放进「启动」文件夹（`Win+R` → 运行 `shell:startup`）。登录后它会自动找到 Python、释放被占的 8765 端口、静默拉起桥，并用 `ServerXMLHTTP` 做健康检查。
+   - ⚠️ 桥必须在**用户的交互登录会话**里跑——它要读 `~/.workbuddy/workbuddy.db` 才能拿到「空间-任务名」；在 SYSTEM / 无桌面会话下起，会读不到库而把任务名降级成「对话 / 上下文压缩」这类浏览器操作名。所以走「登录后自启」即可，别改成系统级服务。
+2. **发布器自启**：把 `publish_snapshot.vbs` 的快捷方式也放进「启动」文件夹。它后台静默跑 `publish_snapshot.py --loop`，按 `interval` 持续把封面推到 GitHub 快照仓库。
+
+> 两者都进启动文件夹后，整条链路（桥渲染 → 发布器推送 → Kindle 拉 raw 直链）在每次开机后自动闭环，正是「电脑重启也能刷得出来」的状态。
+
+- 仓库是 Public 的：URL 只有知道的人才能访问，但**任务名和积分余额会出现在那张 PNG 上**。介意就把仓库名设得足够随机，或在 `publish.ini` 里设 `push_status = false` 少推一份 JSON。
 
 ## 常见问题
 

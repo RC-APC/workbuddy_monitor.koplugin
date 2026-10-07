@@ -9,7 +9,6 @@ plugin on the Kindle can poll it every 3 minutes.
 Routes
   GET  /status.json   -> agent-agnostic status (credits + tasks)
   GET  /cover.png     -> cyberpunk HUD cover rendered from the status
-  POST /report        -> let a WorkBuddy automation push a task status
   GET  /health        -> {"ok": true}
 
 Data sources (all editable, no API required):
@@ -18,7 +17,6 @@ Data sources (all editable, no API required):
                   "date": "YYYY-MM-DD"}]   # date enables the 3-day recency filter
 
 Run:  python wb-bridge.py        (listens on 0.0.0.0:8765)
-Env:  WB_PORT / WB_TOKEN (optional simple bearer token)
 """
 import json
 import os
@@ -41,7 +39,6 @@ if sys.stdout is None or sys.stderr is None:
 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("WB_PORT", "8765"))
-TOKEN = os.environ.get("WB_TOKEN", "")
 LOGPATH = os.path.join(DATA_DIR, "bridge.log")
 
 
@@ -59,8 +56,8 @@ def _log(msg):
     except Exception:
         pass
 
-# in-memory tasks pushed via POST /report (merged with tasks.json)
-_reported = {}
+
+
 
 
 def _load(name, default):
@@ -159,11 +156,6 @@ def build_status():
         if isinstance(t, dict) and "name" in t and t["name"] not in seen:
             merged.append(t)
             seen.add(t["name"])
-    # Tasks pushed manually via POST /report always win and are never dropped.
-    for name, t in _reported.items():
-        if name not in seen:
-            merged.append(t)
-            seen.add(name)
     # running first (by recency), done at the end
     merged.sort(key=lambda t: 0 if str(t.get("status", "")).lower() == "running" else 1)
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -188,11 +180,6 @@ def _have_pillow():
         return False
 
 
-def _deny(handler):
-    handler._send(401, {"error": "unauthorized"})
-    return False
-
-
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -203,22 +190,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _auth(self):
-        if not TOKEN:
-            return True
-        ah = self.headers.get("Authorization", "")
-        return ah == ("Bearer " + TOKEN)
-
     def do_GET(self):
         u = urlparse(self.path)
         _log("REQ from %s  %s" % (self.client_address[0], self.path))
         if u.path in ("/status.json", "/status"):
-            if not self._auth():
-                return _deny(self)
             self._send(200, build_status())
         elif u.path == "/cover.png":
-            if not self._auth():
-                return _deny(self)
             try:
                 from cover_gen import render_cover
                 qs = parse_qs(u.query)
@@ -257,30 +234,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, {"error": str(e)})
         elif u.path == "/health":
             self._send(200, {"ok": True})
-        else:
-            self._send(404, {"error": "not found"})
-
-    def do_POST(self):
-        u = urlparse(self.path)
-        if u.path == "/report":
-            if not self._auth():
-                return _deny(self)
-            try:
-                ln = int(self.headers.get("Content-Length", "0") or "0")
-                raw = self.rfile.read(ln) if ln else b"{}"
-                payload = json.loads(raw or b"{}")
-            except Exception as e:
-                self._send(400, {"error": str(e)})
-                return
-            t = payload.get("task")
-            if isinstance(t, dict) and "name" in t:
-                _reported[t["name"]] = {
-                    "name": t["name"],
-                    "status": t.get("status", "unknown"),
-                    "progress": t.get("progress", 0),
-                    "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            self._send(200, {"ok": True, "tasks": len(_reported)})
         else:
             self._send(404, {"error": "not found"})
 

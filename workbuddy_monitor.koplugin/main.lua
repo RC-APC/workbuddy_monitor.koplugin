@@ -70,8 +70,19 @@ local REFRESH_SEC = 180      -- 3 minutes: live dashboard tick.
                              -- can never race the network or time out.
 
 local DEFAULT_BASE = os.getenv("WB_BRIDGE") or "http://192.168.137.1:8765"
-local BRIDGE_BASE = (G_reader_settings and G_reader_settings:readSetting("wb_bridge_base"))
-                   or DEFAULT_BASE
+
+-- Normalize a base URL: trim whitespace and any trailing slashes. Without this,
+-- pasting "https://raw.githubusercontent.com/o/r/main/" would build
+-- ".../main//cover.png" and GitHub raw answers 404 -- a silent, confusing
+-- failure that looks like "the remote mode does not work".
+local function norm_base(s)
+    s = tostring(s or ""):match("^%s*(.-)%s*$")
+    s = s:gsub("/+$", "")
+    return s
+end
+
+local BRIDGE_BASE = norm_base((G_reader_settings
+    and G_reader_settings:readSetting("wb_bridge_base")) or DEFAULT_BASE)
 
 -- The image is the only user-selectable rendering; MODE is kept solely to
 -- flag the automatic text fallback.
@@ -104,10 +115,78 @@ local function status_url()
     return BRIDGE_BASE .. "/status.json"
 end
 
+-- Is the configured base an https:// URL? Remote (cloud-snapshot) mode uses
+-- https, LAN mode uses plain http -- this one flag drives both the module
+-- choice and the default probe port.
+local function is_https(base)
+    return tostring(base or ""):lower():match("^https://") ~= nil
+end
+
+-- Safe error logger. KOReader's logger does have .err, but a bare logger.err
+-- call would take the whole dashboard down on a build where it doesn't (or if
+-- the message formatting throws). Diagnostic logging must NEVER be able to
+-- crash the thing it is diagnosing.
+local function errlog(fmt, ...)
+    if not (logger and logger.err) then return end
+    -- format HERE (inside errlog's own vararg scope); a nested closure would
+    -- see its own empty `...`, not ours.
+    local msg = string.format(fmt, ...)
+    pcall(function() logger.err(msg) end)
+end
+
+-- Cover fetch URL. In LAN mode we ask the LIVE bridge for the current THEME via
+-- the ?theme= query (rendered on demand). In REMOTE (https) mode the file is a
+-- static CDN object whose query string is IGNORED, so the theme is baked into
+-- the FILE NAME (cover_dark.png / cover_light.png) -- this is what makes
+-- "一键换肤" work in remote mode too. A changing token busts the CDN cache on
+-- every refresh (remote only).
+local function cover_fetch_url(w, h, exit_hint)
+    local base = BRIDGE_BASE
+    local cb = is_https(base) and ("&t=" .. os.time()) or ""
+    exit_hint = exit_hint or 0
+    if is_https(base) then
+        return string.format(
+            "%s/cover_%s.png?w=%d&h=%d&layout=grouped&mono=1&exit=%d%s",
+            base, THEME, w, h, exit_hint, cb)
+    end
+    return string.format(
+        "%s/cover.png?w=%d&h=%d&layout=grouped&mono=1&theme=%s&exit=%d%s",
+        base, w, h, THEME, exit_hint, cb)
+end
+
 -- Network + JSON modules are loaded LAZILY (inside the functions that use
 -- them) and wrapped in pcall. A missing module must NOT abort plugin load,
 -- otherwise the whole plugin silently disappears from KOReader's menu.
-local function get_http()
+
+-- lua-sec ("ssl.https") ships with most KOReader builds but not all of them,
+-- and it is the ONLY way to fetch an https URL -- socket.http has no TLS.
+-- Probe it once, lazily, so a build without it still works fine in LAN mode
+-- instead of failing at plugin load.
+local _https_mod, _https_tried = nil, false
+local function get_https_mod()
+    if _https_tried then return _https_mod end
+    _https_tried = true
+    local ok, mod = pcall(require, "ssl.https")
+    if ok and mod then _https_mod = mod end
+    return _https_mod
+end
+
+-- Human-readable https capability, surfaced on the error board: when a remote
+-- setup fails, "is TLS even available on this device" is the first question.
+local function https_status()
+    if get_https_mod() then return "可用 (ssl.https)" end
+    return "不可用 (缺 ssl.https 模块)"
+end
+
+-- Request module for `base`: ssl.https for https:// URLs, socket.http
+-- otherwise. Returns nil when the needed module is missing -- callers fall
+-- back to the text board rather than crashing.
+local function get_http(base)
+    if is_https(base) then
+        local mod = get_https_mod()
+        if mod then mod.TIMEOUT = 8; return mod end
+        return nil
+    end
     local ok, http = pcall(require, "socket.http")
     if not ok or not http then return nil end
     http.TIMEOUT = 8
@@ -130,8 +209,17 @@ local function bridge_reachable(base, probe_timeout)
     if not (ok and socket and socket.tcp) then return true end
     local host, port = tostring(base or ""):match("^https?://([^:/]+):?(%d*)")
     if not host then return true end
-    port = (port and port ~= "") and tonumber(port) or 8765
+    -- No explicit port: 443 for https (remote cloud snapshot), 8765 for http
+    -- (the LAN bridge default -- every existing config relies on it).
+    port = (port and port ~= "") and tonumber(port)
+           or (is_https(base) and 443 or 8765)
     probe_timeout = probe_timeout or 2
+    -- A remote host is orders of magnitude further away than a LAN peer; 2s
+    -- false-negatives over a slow public CDN and makes the plugin think the
+    -- bridge is down. Give https a much longer window: the GitHub raw CDN is
+    -- frequently slow from mainland China and a 4s TCP handshake timed out
+    -- there often enough to show a false "网络不通".
+    if is_https(base) and probe_timeout < 10 then probe_timeout = 10 end
     local c = socket.tcp()
     if not c then return true end
     c:settimeout(probe_timeout)
@@ -176,7 +264,7 @@ function WorkBuddyMonitor:init()
                 for _, ln in ipairs(lines) do
                     ln = ln:match("^%s*(.-)%s*$")
                     if ln ~= "" and ln:sub(1, 1) ~= "#" then
-                        BRIDGE_BASE = ln
+                        BRIDGE_BASE = norm_base(ln)
                         break
                     end
                 end
@@ -540,7 +628,7 @@ function WorkBuddyMonitor:configure()
                         text = "保存",
                         is_enter_default = true,
                         callback = function()
-                            local v = (dialog:getInputText() or ""):match("^%s*(.-)%s*$")
+                            local v = norm_base(dialog:getInputText() or "")
                             if v ~= "" then
                                 BRIDGE_BASE = v
                                 if G_reader_settings then
@@ -566,8 +654,13 @@ end
 
 -- ---- fetch status JSON ----
 local function fetch_json(url)
-    local http = get_http()
-    if not http then return nil, "LuaSocket 不可用 (此 KOReader 版本缺 socket.http)" end
+    local http = get_http(url)
+    if not http then
+        if is_https(url) then
+            return nil, "此 KOReader 缺 ssl.https，无法访问 https 地址"
+        end
+        return nil, "LuaSocket 不可用 (此 KOReader 版本缺 socket.http)"
+    end
     local body, code = http.request(url)
     if not body then return nil, "HTTP " .. tostring(code) end
     return json_decode(body)
@@ -618,10 +711,20 @@ function WorkBuddyMonitor:buildBoard(data, err)
         end
     end
     if err then
+        -- Log it so crash.log records WHY the board fell back to the error
+        -- screen (probe fail / download fail / 404 / SSL error). Previously the
+        -- "网络不通" text only appeared on screen and left no trace anywhere.
+        errlog("WorkBuddyMonitor: showing BRIDGE ERROR board err=%s base=%s",
+            tostring(err), tostring(BRIDGE_BASE))
         add(">> BRIDGE ERROR <<", 22)
         add(err, 16)
-        add("PC bridge 未运行 / IP 错误 / 防火墙未放行 8765", 14)
+        add(is_https(BRIDGE_BASE)
+            and "远程模式：地址错误 / PC 未推送快照 / 网络不通"
+            or "PC bridge 未运行 / IP 错误 / 防火墙未放行 8765", 14)
         add("addr: " .. tostring(BRIDGE_BASE), 14)
+        if is_https(BRIDGE_BASE) then
+            add("https 支持: " .. https_status(), 14)
+        end
         local vg = VerticalGroup:new{ align = "left" }
         for _, w in ipairs(L) do vg[#vg + 1] = w end
         return vg
@@ -803,16 +906,25 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
     auto = true  -- image mode is always a live, refreshing cover
     self:_cancelTimer()
     local my_gen = self._gen
-    local http = get_http()
+    local http = get_http(BRIDGE_BASE)
     local ltn12 = get_ltn12()
     if not http or not ltn12 then
         self:_showBoard(true, quiet); return
     end
-    -- Reachability pre-check: if the bridge is down we must NOT spend the full
-    -- 12s download window freezing the UI. Skip the download, keep the last
-    -- good cover, and back off longer (60s) so we don't re-freeze every 20s
-    -- while the bridge is genuinely unreachable.
-    if not bridge_reachable(BRIDGE_BASE, 2) then
+    -- Reachability pre-check. In LAN mode a failed probe genuinely means the
+    -- bridge is down, so we skip the 12s download and keep the last good cover.
+    -- In REMOTE (https) mode the TCP probe to a distant CDN false-negatives far
+    -- too easily from mainland China -- treating it as authoritative produced a
+    -- false "网络不通" even with a perfectly good snapshot on GitHub. There we
+    -- only LOG the probe result and still attempt the real download, which has
+    -- its own timeout.
+    local remote = is_https(BRIDGE_BASE)
+    local reachable = bridge_reachable(BRIDGE_BASE, 2)
+    if not reachable then
+        errlog("WorkBuddyMonitor: TCP probe UNREACHABLE base=%s remote=%s -- attempting download anyway",
+            tostring(BRIDGE_BASE), tostring(remote))
+    end
+    if not reachable and not remote then
         logger.dbg("WorkBuddyMonitor bridge unreachable, skipping download")
         if self._last_cover and is_png(self._last_cover) then
             if not self._exiting then
@@ -842,21 +954,35 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
     -- Download into a SCRATCH file first: if the transfer dies halfway we must
     -- not have truncated the cached PNG we are currently displaying.
     local tmp = path .. ".tmp"
-    local f = io.open(tmp, "wb")
-    if not f then self:_showBoard(true, quiet); return end
-    http.TIMEOUT = 12  -- keep the UI-freeze window short; retries are cheap
-    local rok, rinfo = http.request{
-        url = string.format("%s/cover.png?w=%d&h=%d&layout=grouped&mono=1&theme=%s", BRIDGE_BASE, w, h, THEME),
-        sink = ltn12.sink.file(f),
-    }
-    -- ltn12.sink.file() closes the handle when the transfer finishes, so the
-    -- file is ALREADY closed here. A second f:close() throws "closed file" ->
-    -- guard it (this was the image-mode crash).
-    pcall(function() f:close() end)
-    -- The user may have tapped 退出 during the (blocking) download: a widget
-    -- built now must never reach the screen.
-    if self._exiting then self:_discardTmp(tmp); return end
-    local ok_dl, derr = cover_fetch_ok(rok, rinfo, tmp)
+    -- Remote (https) fetches go over a distant, flaky CDN path: a plain request
+    -- often returns a socket-level "wantread" in a few seconds without ever
+    -- reaching the 12s timeout, so the fix is MORE ATTEMPTS, not just a longer
+    -- deadline. Give remote a slightly longer timeout AND 3 tries; a single
+    -- dropped request must not surface as "网络不通".
+    http.TIMEOUT = remote and 15 or 12
+    local cover_url = cover_fetch_url(w, h, 0)
+    local attempts = remote and 3 or 1
+    local ok_dl, derr
+    for attempt = 1, attempts do
+        local f = io.open(tmp, "wb")
+        if not f then self:_showBoard(true, quiet); return end
+        local rok, rinfo = http.request{
+            url = cover_url,
+            sink = ltn12.sink.file(f),
+        }
+        -- ltn12.sink.file() closes the handle when the transfer finishes, so the
+        -- file is ALREADY closed here. A second f:close() throws "closed file" ->
+        -- guard it (this was the image-mode crash).
+        pcall(function() f:close() end)
+        -- The user may have tapped 退出 during the (blocking) download: a widget
+        -- built now must never reach the screen.
+        if self._exiting then self:_discardTmp(tmp); return end
+        ok_dl, derr = cover_fetch_ok(rok, rinfo, tmp)
+        if ok_dl then break end
+        self:_discardTmp(tmp)
+        errlog("WorkBuddyMonitor cover fetch FAILED (try %d/%d) url=%s err=%s",
+            attempt, attempts, cover_url, tostring(derr))
+    end
     if ok_dl then
         pcall(function() os.remove(path) end)
         if not os.rename(tmp, path) then
@@ -1206,7 +1332,7 @@ end
 
 -- Download a cover straight into `path` (atomic). exit_hint 0 = no ✕.
 function WorkBuddyMonitor:_fetchCoverFile(path, exit_hint, timeout)
-    local http = get_http()
+    local http = get_http(BRIDGE_BASE)
     local ltn12 = get_ltn12()
     if not (http and ltn12) then return false end
     local tmp = path .. ".wb.tmp"
@@ -1214,10 +1340,8 @@ function WorkBuddyMonitor:_fetchCoverFile(path, exit_hint, timeout)
     if not f then return false end
     http.TIMEOUT = timeout or 12
     local rok, rinfo = http.request{
-        url = string.format(
-            "%s/cover.png?w=%d&h=%d&layout=grouped&mono=1&theme=%s&exit=%d",
-            BRIDGE_BASE, Device.screen:getWidth(),
-            Device.screen:getHeight(), THEME, exit_hint or 0),
+        url = cover_fetch_url(Device.screen:getWidth(),
+                              Device.screen:getHeight(), exit_hint or 0),
         sink = ltn12.sink.file(f),
     }
     pcall(function() f:close() end)

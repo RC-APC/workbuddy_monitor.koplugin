@@ -1,0 +1,60 @@
+# 远程快照推送配置 —— 复制本文件为 publish.ini 后填写
+#
+# ⚠️ publish.ini 里有 token，不要提交到 git、不要放进发布包。
+#
+# 准备步骤（一次性，约 3 分钟）：
+#   1. GitHub 新建一个空仓库（建议仓库名用一段随机字符串，例如 wb-board-xxxxxx，
+#      这样 URL 只有你自己知道；选 Public 即可，免费账号的私有仓库无法匿名直链）
+#   2. Settings -> Developer settings -> Personal access tokens -> Fine-grained tokens
+#      -> Generate new token：
+#         Repository access = Only select repositories（只勾刚建的仓库）
+#         Permissions = Contents: Read and write
+#      生成后把 token 填到下面
+#   3. 填好 owner / repo / token，然后跑：
+#         python publish_snapshot.py --check      # 验证并打印 Kindle 该填的地址
+#         python publish_snapshot.py --once --dry-run   # 取数据但不上传
+#         python publish_snapshot.py --once       # 真推一次
+#         python publish_snapshot.py --loop       # 持续推送（默认每 5 分钟）
+#   4. Kindle 端「设置桥地址」填：
+#         https://raw.githubusercontent.com/<owner>/<repo>/<branch>
+#      （publish_snapshot.py --check 会直接把这行打印出来）
+#
+# 说明：远程模式看到的是「最近一次推送的快照」，不是实时画面。
+#       间隔越短越实时，但每次推送 = 一个 commit，默认 300 秒是个平衡点。
+
+# ⚠️ 不要在这个 example 里填真实 token —— 它是要提交/发布的。
+#    真实配置请填写在同目录的 publish.ini（已被 .gitignore 忽略）。
+
+[publish]
+backend = github
+owner = 你的GitHub用户名
+repo = 你的仓库名
+branch = main
+token = github_pat_xxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 仓库内的文件路径（一般不用改）
+# ⚠️ 现在每次推送会同时上传 cover_dark.png 和 cover_light.png 两份，
+#    远程模式下的「换肤」靠 Kindle 自己选文件名，所以这里不用再指定单张。
+png_path = cover.png
+json_path = status.json
+# status.json 含积分明细与任务名，介意的话设 false（Kindle 就只用图片模式）
+push_status = true
+
+# 本地桥地址 —— 脚本从这里取渲染好的图，再推上去
+bridge = http://127.0.0.1:8765
+# 渲染尺寸要和 Kindle 屏幕一致（插件菜单里看板报错页会显示实际分辨率）
+width = 1072
+height = 1448
+# ⚠️ 此 theme 仅供本地 LAN 模式参考；远程推送现在固定同时出暗/亮两套封面，
+#    Kindle 在远程模式下按自己的「配色」设置拉 cover_dark.png / cover_light.png。
+theme = dark
+
+# 推送间隔（秒）
+interval = 600
+
+# 历史策略：
+#   single（默认）= 每次推送把仓库重写成「只有一个 commit」，旧对象被 GitHub 回收，
+#                   体积恒定，永远不用手动清理。快照仓库本来也不需要历史。
+#   append        = 每次推送追加一个 commit（默认间隔下约 300 commit/天、每天约 18MB，
+#                   需要定期手动清理）。仅在你确实想保留历史时才用。
+history = single

@@ -268,7 +268,6 @@ def _query(db, now, days, max_tasks):
             "progress": 1.0 if st == "done" else 0.0,
             "credits": cre,
             "date": dt.strftime("%Y-%m-%d %H:%M"),
-            "ts": ts_ms,
             "detail": "%s · %.0fh前" % (dt.strftime("%m-%d %H:%M"), age_h),
             "cwd": cwd,
             "src": "sessions-db",

@@ -601,6 +601,24 @@ def render_cover(status, w=1080, h=1440, task_layout="grouped", mono=True,
     return buf.getvalue()
 
 
+def _wrap(d, text, font, max_w):
+    """Greedy char-level wrap (CJK-safe: breaks per glyph, honours \n)."""
+    out = []
+    for para in str(text).split("\n"):
+        line = ""
+        for ch in para:
+            test = line + ch
+            if d.textlength(test, font=font) > max_w and line:
+                out.append(line)
+                line = ch
+            else:
+                line = test
+        out.append(line)
+    return out
+
+
+
+
 if __name__ == "__main__":
     today = datetime.now()
 

@@ -8,6 +8,14 @@ http://192.168.1.100:8765
 #   ⚠️ 同一 WiFi 下的 IP 是 DHCP 动态分配的，重连 / 休眠唤醒 / 路由器重启后可能变；
 #      变了就在 PC 上重新查 IP、改这里、然后重新部署插件。
 #
+#   远程模式（不依赖局域网，在别处也能看）：
+#     把第 1 行换成 https 地址，例如
+#       https://raw.githubusercontent.com/<owner>/<repo>/<branch>
+#     前提是 PC 端跑着 publish_snapshot.py 定时把封面推送到那个仓库
+#     （见 publish.ini.example）。此时看到的是「最近一次推送的快照」，
+#     不是实时画面；PC 关机后仍保留最后一次推送的内容。
+#     远程模式需要 KOReader 支持 https（ssl.https），绝大多数版本都有。
+#
 # 可选配置（不写就用默认值；一旦在插件菜单里改过，以菜单为准）：
 #
 #   theme=dark    黑底白字（默认）
