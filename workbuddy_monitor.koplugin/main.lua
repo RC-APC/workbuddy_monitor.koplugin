@@ -1036,6 +1036,19 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
     local function closeSelf()
         plugin:exitDashboard()
     end
+    -- Key-only Kindle (K3 etc.): exit on ANY key the device can produce.
+    -- Side page buttons -> LPAGE/RPAGE; 5-way -> Press/Up/Down/Left/Right;
+    -- plus Back/Home/Menu/Enter. Broad binding so the board is always
+    -- dismissable without a touchscreen (touch builds keep tap/hold/swipe).
+    local _exit_keys = { "LPAGE", "RPAGE", "PGUP", "PGDN", "NextPage", "PrevPage",
+                         "Back", "Home", "Menu", "Press", "Ok", "Enter",
+                         "Up", "Down", "Left", "Right" }
+    local _ke = {}
+    -- KOReader key_events: a single-key sequence is `{ _k }`; writing
+    -- `{ "Press", _k }` would require BOTH keys held together (Press as a
+    -- modifier) and NEVER match a normal keypress -- that is why no key
+    -- could dismiss the board before. Bind each key on its own.
+    for _, _k in ipairs(_exit_keys) do _ke["Exit" .. _k] = { { _k } } end
     -- LAYOUT NOTE: this MUST stay a single CenterContainer holding just the
     -- image. An earlier version added a TopContainer with a real Button above
     -- it, but passing `dimen = scr` made that TopContainer consume the WHOLE
@@ -1052,18 +1065,16 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
             -- so it exits too (tap can be swallowed while the screen is busy).
             SwipeClose = { GestureRange:new{ ges = "swipe", range = scr } },
         },
-        key_events = {
-            ExitPgDn = { { "Press", "PGDN" }, { "Press", "NextPage" } },
-            ExitPgUp = { { "Press", "PGUP" }, { "Press", "PrevPage" } },
-        },
+        key_events = _ke,
     }
     widget[1] = CenterContainer:new{ dimen = scr, img }
     widget._wb_board = true   -- so _closeAllBoards() can find it on any rebuild
     function widget:onTapSelect()  closeSelf(); return true end
     function widget:onHoldSelect() closeSelf(); return true end
     function widget:onSwipeClose() closeSelf(); return true end
-    function widget:onExitPgDn()   closeSelf(); return true end
-    function widget:onExitPgUp()   closeSelf(); return true end
+    for _, _k in ipairs(_exit_keys) do
+        widget["onExit" .. _k] = function() closeSelf(); return true end
+    end
     -- last checkpoint: the download was blocking, so an exit may have landed
     -- while this widget was being built -- never show it in that case.
     if self._exiting or self._gen ~= my_gen then return end
@@ -1118,6 +1129,19 @@ function WorkBuddyMonitor:_showBoard(auto, quiet)
     local function closeSelf()
         plugin:exitDashboard()
     end
+    -- Key-only Kindle (K3 etc.): exit on ANY key the device can produce.
+    -- Side page buttons -> LPAGE/RPAGE; 5-way -> Press/Up/Down/Left/Right;
+    -- plus Back/Home/Menu/Enter. Broad binding so the board is always
+    -- dismissable without a touchscreen (touch builds keep tap/hold/swipe).
+    local _exit_keys = { "LPAGE", "RPAGE", "PGUP", "PGDN", "NextPage", "PrevPage",
+                         "Back", "Home", "Menu", "Press", "Ok", "Enter",
+                         "Up", "Down", "Left", "Right" }
+    local _ke = {}
+    -- KOReader key_events: a single-key sequence is `{ _k }`; writing
+    -- `{ "Press", _k }` would require BOTH keys held together (Press as a
+    -- modifier) and NEVER match a normal keypress -- that is why no key
+    -- could dismiss the board before. Bind each key on its own.
+    for _, _k in ipairs(_exit_keys) do _ke["Exit" .. _k] = { { _k } } end
     -- A REAL tappable button, with bordersize=0 so it never draws a frame.
     -- This is the primary exit path in the fallback board; the full-screen
     -- InputContainer tap can be unreliable on some e-ink builds, so we do not
@@ -1141,20 +1165,19 @@ function WorkBuddyMonitor:_showBoard(auto, quiet)
             HoldSelect = { GestureRange:new{ ges = "hold",  range = scr } },
             SwipeClose = { GestureRange:new{ ges = "swipe", range = scr } },
         },
-        -- Physical page-turn keys (上/下翻页键) also exit, since this device
-        -- has no back key. Key names are best-effort across Kindle builds.
-        key_events = {
-            ExitPgDn = { { "Press", "PGDN" }, { "Press", "NextPage" } },
-            ExitPgUp = { { "Press", "PGUP" }, { "Press", "PrevPage" } },
-        },
+        -- Physical page-turn keys exit too: on Kindle hardware the side buttons
+        -- produce LPAGE/RPAGE (K3 etc.), NextPage/PrevPage on other builds, and
+        -- the Back key as well. Best-effort coverage across Kindle builds.
+        key_events = _ke,
     }
     widget[1] = TopContainer:new{ dimen = scr, content }
     widget._wb_board = true
     function widget:onTapSelect()  closeSelf(); return true end
     function widget:onHoldSelect() closeSelf(); return true end
     function widget:onSwipeClose() closeSelf(); return true end
-    function widget:onExitPgDn()   closeSelf(); return true end
-    function widget:onExitPgUp()   closeSelf(); return true end
+    for _, _k in ipairs(_exit_keys) do
+        widget["onExit" .. _k] = function() closeSelf(); return true end
+    end
     if self._exiting or self._gen ~= my_gen then return end
     UIManager:show(widget)
     self.active_widget = widget

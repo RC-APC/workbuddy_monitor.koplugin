@@ -11,6 +11,7 @@ Cast your [WorkBuddy](https://workbuddy.cn) agent's **credit balance / task prog
 - **Persistent dashboard**: stays on the Kindle screen, auto-refreshes every **3 minutes** (re-pulls the PNG from the bridge; the `SYNC <time>` timestamp updates, never freezes).
 - **Two themes**: dark (`theme=dark`, white-on-black) / light (`theme=light`, black-on-white), both e-ink-safe grayscale.
 - **Three bindable gestures**: `WorkBuddy Dashboard` (toggle) / `WorkBuddy Set Lock-Screen Wallpaper` / `WorkBuddy Exit Dashboard`.
+- **Works on keypad-only Kindles too**: on button-only devices like the Kindle 3 (no touchscreen), just press **any physical key** (page-turn buttons / 5-way directional / Back) to dismiss the board — no gesture needed.
 - **Lock-screen cover**: after you tap "Set Lock-Screen Wallpaper", every dashboard refresh copies the latest image into `wb_ss/cover.png`; just point KOReader's screensaver at that folder and the lock screen follows automatically.
 - **Offline fallback**: when the bridge can't fetch live data, it falls back to static `credits.json` / `tasks.json` so the screen is never blank.
 - **Sleep-proof**: while the dashboard is up, Kindle auto-suspend is paused to avoid "unresponsive / only a reboot fixes it".
@@ -189,6 +190,21 @@ Switch to `history = append` only if you actually want the history (then expect 
 - The default `interval` is 600s (10 min); no need to go lower. Under `history = single` the interval only affects API usage, not repo size.
 - `publish_snapshot.vbs` starts the pusher silently in the background (double-click = `--loop`); output goes to `publish.log` (the script writes it itself, because `pythonw` has no console).
 - You see a **snapshot**, not a live frame; the last push survives the PC going offline.
+- `publish.ini`'s `width` / `height` = **the cover size pushed to GitHub** (remote mode is one fixed-size image that can't serve multiple device sizes at once). **Set them to the screen resolution of the device you mainly view the board on** — otherwise that device only shows the *center crop* of the larger image, not the whole board. Common values are in "What width/height to set per device" below.
+
+### What width/height to set per device
+
+Remote mode pushes one **fixed-size** image, and the plugin displays it 1:1 (it does not auto-scale to fit). So the image dimensions must match the screen of the device you view it on, or it won't fill the screen correctly.
+
+| Device | width | height |
+|---|---|---|
+| Kindle 3 / Keyboard / Kindle 4 / Touch (600×800 screen) | 600 | 800 |
+| Kindle Paperwhite 1 / 2 (758×1024 screen) | 758 | 1024 |
+| Kindle Paperwhite 3 / 4 / 5, Voyage, Oasis (hi-res) | 1072 | 1448 |
+
+- **Not sure of your resolution?** Trigger the board once from the plugin menu; the error / info page prints `screen: WxH`, which is your actual device resolution.
+- **One device**: set `width` / `height` to its resolution and the remote snapshot fills perfectly.
+- **Multiple devices**: one image serves one resolution — whatever you put in `ini`, that device is perfect while the others see a *center-cropped* slice. Either set `ini` for the device you use most and change + re-push when you switch, or **use LAN mode** instead (the plugin renders per-device on the fly, so it never crops).
 
 ### Autostart (remote board recovers after reboot)
 
@@ -221,6 +237,10 @@ A: Work out which side is at fault first. Open `http://127.0.0.1:8765/status.jso
 
 **Q: The cover shows EXPIRED / an alert bar?**
 A: The cookie expired — refresh `cookies.txt` as described in "What if the login expires".
+
+**Q: I use a keypad-only Kindle (Kindle 3, no touchscreen) — how do I exit the board, and what resolution do I set?**
+A: Exiting — once the board is up, press **any physical key**: the page-turn buttons, the 5-way directional keys, the 5-way center, or Back all dismiss it; no gesture required (tap / swipe / hold still work on touch devices).
+Resolution — **in LAN mode you set nothing**: the plugin sends the device's own screen size to the bridge, which renders at exactly that size, so a K3 automatically gets 600×800 and a high-res Kindle gets its own resolution, each crisp and uncropped. Only **remote mode** pushes one fixed-size image whose dimensions come from `width` / `height` in your PC's `publish.ini` (the example defaults to `1072×1448`, tuned for Paperwhite-class hi-res devices): if `ini` is set to the hi-res `1072×1448` and you view the remote snapshot on a K3, you only see the *center 600×800 slice* of that larger image (cropped), not the whole board — and vice versa. So per the "What width/height to set per device" section above, set `ini` to the resolution of the device you mainly view the board on.
 
 ## License
 

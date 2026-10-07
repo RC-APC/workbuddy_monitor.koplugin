@@ -397,8 +397,16 @@ def render_cover(status, w=1080, h=1440, task_layout="grouped", mono=True,
     """theme: "dark" = black bg / white text, "light" = white bg / black text.
     Both are grayscale and both ship as 8-bit "L" PNGs."""
     P = _palette(theme, color=not mono)
-    img = Image.new("RGBA", (w, h), P["BG"] + (255,))
+    # Render in the 1080x1440 DESIGN space (every hardcoded metric below assumes
+    # it), then downscale to the requested (w, h) at the end. This keeps the
+    # layout proportional on any device -- e.g. a 600x800 Kindle 3 no longer
+    # shows "字大图小"; the old code baked fixed-size pixels that only fit
+    # 1080x1440, so smaller targets got oversized text and a cramped layout.
+    DW, DH = 1080, 1440
+    img = Image.new("RGBA", (DW, DH), P["BG"] + (255,))
     d = ImageDraw.Draw(img)
+    _ow, _oh = w, h          # requested output size, applied before save
+    w, h = DW, DH            # body below draws in design coordinates
 
     # background grid
     step = 96
@@ -588,6 +596,15 @@ def render_cover(status, w=1080, h=1440, task_layout="grouped", mono=True,
     # copy with no per-pixel colour conversion -- that is both the correct
     # format for the panel and the cheapest blit. Color mode (?mono=0) is a
     # PC-only preview and stays RGB.
+    # downscale the design-space image to the requested device size
+    # (proportional fit; no-op when w/h == 1080x1440)
+    if (_ow, _oh) != (w, h):
+        try:
+            resample = Image.Resampling.LANCZOS
+        except AttributeError:        # Pillow < 9.1
+            resample = Image.LANCZOS
+        img = img.resize((_ow, _oh), resample)
+
     if mono:
         out = img.convert("L")
         try:
