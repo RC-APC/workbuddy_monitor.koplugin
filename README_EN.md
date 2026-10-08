@@ -186,6 +186,8 @@ python publish_snapshot.py --loop             # keep pushing (every 600s / 10 mi
      >
      > Example: if your relay repo is `wb-board-xxxxxx` on branch `main`, the ghproxy URL is `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/wb-board-xxxxxx/main`.
 
+     > ⚠️ **How to save the address safely**: both the in-plugin "Set bridge address" dialog and hand-editing line 1 of `config.txt` now read/write the **same** `config.txt` (inside the plugin folder), and `config.txt` has the highest priority. After changing it, **quit KOReader normally from its menu once before powering off / rebooting** — if KOReader is force-powered-off while running (long-press hard reboot), the latest change may not have been flushed to disk and will be lost. If a change does not take effect, make sure line 1 of `config.txt` is a clean bare `http(s)://...` URL (no `/cover.png`, and not a `key=value` line like `theme=`).
+
 **The repo does not bloat (handled automatically)**
 
 `history = single` in `publish.ini` (the default) pushes through the Git Database API: each push builds a tree with just those two files, creates a **parentless commit**, and force-moves the branch to it. Result:
