@@ -69,6 +69,13 @@ local REFRESH_SEC = 180      -- 3 minutes: live dashboard tick.
                              -- It is NEVER fetched inside onSuspend, so a sleep
                              -- can never race the network or time out.
 
+-- Auto-exit the dashboard if no FRESH cover has been fetched for this long
+-- (seconds). This is the "network died / bridge down / CDN unreachable" guard:
+-- without it a device can sit frozen on a stale, hours-old screen. Overridable
+-- per-device via the config.txt line "auto_exit_stale=900"; absent => 15 min;
+-- set to a large number to effectively keep it on screen much longer.
+local AUTO_EXIT_STALE_SEC = 15 * 60
+
 local DEFAULT_BASE = os.getenv("WB_BRIDGE") or "http://192.168.137.1:8765"
 
 -- Normalize a base URL: trim whitespace and any trailing slashes. Without this,
@@ -317,6 +324,16 @@ function WorkBuddyMonitor:init()
                     if t == "light" or t == "dark" then THEME = t break end
                 end
             end
+            -- auto-exit-if-stale: config.txt "auto_exit_stale=900" (seconds);
+            -- 0/absent => default 15 min, negative => disabled.
+            for _, ln in ipairs(lines) do
+                local s = ln:match("^%s*auto_exit_stale=%s*(%-?%d+)%s*$")
+                if s then
+                    local v = tonumber(s)
+                    if v and v > 0 then AUTO_EXIT_STALE_SEC = v end
+                    break
+                end
+            end
             -- (hotkey support was removed: unusable on touch-only devices)
         end
     end
@@ -546,7 +563,7 @@ end
 --       captures it before downloading and refuses to show anything if it
 --       changed while it was blocked -- the late widget is discarded, not shown.
 --     * a few delayed sweeps re-close anything that still slipped through.
-function WorkBuddyMonitor:exitDashboard()
+function WorkBuddyMonitor:exitDashboard(reason)
     self._dashboard = false
     self._exiting = true          -- stop any in-flight refresh tick
     self._gen = (self._gen or 0) + 1
@@ -573,8 +590,11 @@ function WorkBuddyMonitor:exitDashboard()
             self.ui.menu:updateItems()
         end
     end)
+    local msg = (reason == "stale")
+        and "看板已自动退出（超过 15 分钟未收到新刷新）。"
+        or "已退出常驻看板。"
     pcall(function() UIManager:show(InfoMessage:new{
-        text = "已退出常驻看板。", timeout = 2,
+        text = msg, timeout = 2,
     }) end)
 end
 
@@ -850,6 +870,33 @@ function WorkBuddyMonitor:_cancelTimer()
         UIManager:unschedule(self.refresh_timer)
         self.refresh_timer = nil
     end
+    if self.stale_timer then
+        UIManager:unschedule(self.stale_timer)
+        self.stale_timer = nil
+    end
+end
+
+-- Arms (or re-arms) the "auto-exit if no fresh cover" watchdog. It polls every
+-- 60 s and, if the board has gone AUTO_EXIT_STALE_SEC without a successful
+-- fetch, leaves the dashboard on its own -- so a bridge outage or a dead CDN
+-- path never traps the user on a frozen, stale screen for hours.
+function WorkBuddyMonitor:_scheduleStaleWatch()
+    if self._exiting then return end
+    self.stale_timer = UIManager:scheduleIn(60, function()
+        if self._exiting or self._gen ~= self._stale_gen then return end
+        local last = self._last_refresh_ts or 0
+        if last > 0 and (os.time() - last) >= AUTO_EXIT_STALE_SEC then
+            errlog("WorkBuddyMonitor: no fresh cover for %d s, auto-exiting dashboard",
+                os.time() - last)
+            self:_staleAutoExit()
+            return
+        end
+        self:_scheduleStaleWatch()
+    end)
+end
+
+function WorkBuddyMonitor:_staleAutoExit()
+    self:exitDashboard("stale")
 end
 
 -- Close the full-screen view currently on screen (if any) so re-opening a
@@ -919,6 +966,9 @@ function WorkBuddyMonitor:showCover(auto)
     -- the text board if the download or the blit fails, so there is still a
     -- readable screen in every failure mode.
     self:_keepAwake(true)
+    self._last_refresh_ts = os.time()   -- start the stale clock from entry
+    self._stale_gen = self._gen
+    self:_scheduleStaleWatch()
     self:_showImage(true, false)
 end
 
@@ -990,12 +1040,15 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
     local tmp = path .. ".tmp"
     -- Remote (https) fetches go over a distant, flaky CDN path: a plain request
     -- often returns a socket-level "wantread" in a few seconds without ever
-    -- reaching the 12s timeout, so the fix is MORE ATTEMPTS, not just a longer
-    -- deadline. Give remote a slightly longer timeout AND 3 tries; a single
-    -- dropped request must not surface as "网络不通".
-    http.TIMEOUT = remote and 15 or 12
+    -- reaching the timeout. BUT the fetch is SYNCHRONOUS on KOReader's only UI
+    -- thread, so every second of blocking freezes the whole device (screen
+    -- stuck, taps swallowed) -- that is the "刷新几次就卡屏" symptom on a bad
+    -- network. Keep the blocking window SHORT: 8s x 2 tries is enough to ride
+    -- out a blip, and a single dropped request surfaces as a quiet retry (the
+    -- last good cover stays up) rather than a 45s freeze.
+    http.TIMEOUT = remote and 8 or 10
     local cover_url = cover_fetch_url(w, h, 0)
-    local attempts = remote and 3 or 1
+    local attempts = remote and 2 or 1
     local ok_dl, derr
     for attempt = 1, attempts do
         local f = io.open(tmp, "wb")
@@ -1031,6 +1084,7 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
         -- by which time nothing references it any more.
         self._prev_cover = self._last_cover   -- still on screen until we swap
         self._last_cover = path
+        self._last_refresh_ts = os.time()      -- a fresh cover arrived
         self:_updateLockFile()
         -- NOTE: do NOT sweep here. ImageWidget decodes lazily/asynchronously,
         -- so the picture we are replacing (and the one we are about to show)
@@ -1048,8 +1102,13 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
             -- instead of leaving a stale cover on screen forever: with no
             -- visible cue the board just looks "stuck at an old timestamp".
             if self._fail_count <= 2 then
+                -- Back off on a flaky/slow CDN: each synchronous fetch freezes
+                -- the UI thread for (timeout x attempts) seconds, so spacing the
+                -- retries out (20/40s) keeps the device usable during an outage
+                -- instead of re-blocking the UI every 20s.
+                local backoff = math.min(20 * self._fail_count, 120)
                 if not self._exiting then
-                    self.refresh_timer = UIManager:scheduleIn(20, function()
+                    self.refresh_timer = UIManager:scheduleIn(backoff, function()
                         self:_showImage(true, true)
                     end)
                 end
