@@ -248,6 +248,33 @@ local WorkBuddyMonitor = WidgetContainer:extend{
     is_doc_only = false,   -- show in file browser / home, not only when a doc is open
 }
 
+function WorkBuddyMonitor:_writeBaseToConfig(v)
+    if not self.path then return end
+    local p = self.path .. "/config.txt"
+    local lines = {}
+    local f0 = io.open(p, "r")
+    if f0 then
+        for ln in f0:lines() do lines[#lines + 1] = ln end
+        f0:close()
+    end
+    -- replace the first bare-URL (base) line; keep theme= / other lines
+    local replaced = false
+    for i, ln in ipairs(lines) do
+        local s = ln:match("^%s*(.-)%s*$")
+        if s ~= "" and s:sub(1, 1) ~= "#" and not s:match("^%w+=") then
+            lines[i] = v
+            replaced = true
+            break
+        end
+    end
+    if not replaced then lines[#lines + 1] = v end
+    local f = io.open(p, "w")
+    if not f then return end
+    f:write(table.concat(lines, "\n"))
+    if #lines > 0 and not lines[#lines]:match("\n$") then f:write("\n") end
+    f:close()
+end
+
 function WorkBuddyMonitor:init()
     -- config.txt in the plugin folder can pin the bridge base and the colour
     -- theme without needing any input dialog. A saved setting always
@@ -258,17 +285,20 @@ function WorkBuddyMonitor:init()
             local lines = {}
             for ln in f:lines() do lines[#lines + 1] = ln end
             f:close()
-            -- bridge base: only if not already saved in settings
-            local saved_base = G_reader_settings and G_reader_settings:readSetting("wb_bridge_base")
-            if not (saved_base and saved_base ~= "") then
-                for _, ln in ipairs(lines) do
-                    ln = ln:match("^%s*(.-)%s*$")
-                    if ln ~= "" and ln:sub(1, 1) ~= "#" then
-                        BRIDGE_BASE = norm_base(ln)
-                        break
-                    end
+            -- bridge base: config.txt (plugin-local, user-editable) wins over
+            -- the KOReader global setting, so editing config.txt ALWAYS takes
+            -- effect and is never shadowed by a previously saved setting.
+            -- (A base line is a bare URL; skip "key=value" lines like theme=.)
+            local cfg_base
+            for _, ln in ipairs(lines) do
+                ln = ln:match("^%s*(.-)%s*$")
+                if ln ~= "" and ln:sub(1, 1) ~= "#" and not ln:match("^%w+=") then
+                    cfg_base = norm_base(ln)
+                    break
                 end
             end
+            local saved_base = G_reader_settings and G_reader_settings:readSetting("wb_bridge_base")
+            BRIDGE_BASE = cfg_base or saved_base or DEFAULT_BASE
             -- the cover is ALWAYS the PC-rendered PNG now (the text board was
             -- removed), so image mode is the only mode
             MODE = "image"
@@ -634,6 +664,10 @@ function WorkBuddyMonitor:configure()
                                 if G_reader_settings then
                                     G_reader_settings:saveSetting("wb_bridge_base", v)
                                 end
+                                -- Persist to config.txt too: it is closed
+                                -- immediately (unlike the debounced KOReader
+                                -- setting), so the address survives a hard reboot.
+                                pcall(function() self:_writeBaseToConfig(v) end)
                             end
                             UIManager:close(dialog)
                         end,
