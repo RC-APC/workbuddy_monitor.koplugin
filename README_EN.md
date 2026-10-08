@@ -155,7 +155,7 @@ PC bridge (local, outbound only)  --push-->  GitHub repo  --raw-->  Kindle on an
 
 | | LAN direct | Remote snapshot |
 |---|---|---|
-| Bridge URL | `http://192.168.x.x:8765` | `https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+| Bridge URL | `http://192.168.x.x:8765` | `https://raw.githubusercontent.com/<owner>/<repo>/<branch>` (**use a mirror in mainland China, see below, or the screen reports "network unreachable"**) |
 | Freshness | live (3-min refresh) | last push (every 10 min by default) |
 | PC needs | same network as Kindle | internet access only — no public IP, no port forwarding, no tunnel |
 | PC off | board shows an error | keeps showing the last snapshot |
@@ -172,7 +172,19 @@ python publish_snapshot.py --once --dry-run   # fetch a cover without uploading
 python publish_snapshot.py --once             # push once for real
 python publish_snapshot.py --loop             # keep pushing (every 600s / 10 min by default)
 ```
-5. On the Kindle, 设置桥地址 = `https://raw.githubusercontent.com/<owner>/<repo>/<branch>` (the plugin appends `/cover.png`).
+5. On the Kindle, 设置桥地址 = one of the URLs below (the plugin auto-appends `/cover_dark.png` or `/cover_light.png` by theme, and `/status.json` — **do not add the filename yourself**):
+
+   - **Outside mainland China / can reach GitHub directly**: `https://raw.githubusercontent.com/<owner>/<repo>/<branch>`
+   - **Mainland China (recommended — `raw.githubusercontent.com` is often blocked / times out there, so the screen would report "network unreachable")**: use a mirror that is directly reachable:
+
+     | Mirror | Bridge URL for the Kindle |
+     |---|---|
+     | **jsDelivr** (recommended, stable CDN) | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>` |
+     | **ghproxy.net** (fallback, more instant updates) | `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+
+     > ⚠️ Mirror URL format: jsDelivr uses `@branch` (not `/branch`). Mirrors cache files for **a few minutes**, so remote refresh will lag slightly beyond the 10-min interval — that is normal; ghproxy does not cache and is more instant but depends on a third party.
+     >
+     > Example: if your relay repo is `wb-board-xxxxxx` on branch `main`, the jsDelivr URL is `https://cdn.jsdelivr.net/gh/<owner>/wb-board-xxxxxx@main`.
 
 **The repo does not bloat (handled automatically)**
 

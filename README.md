@@ -155,7 +155,7 @@ PC 桥（本地，只出站）  --定时推送-->  GitHub 仓库  --直链-->  �
 
 | | 局域网直连 | 远程快照 |
 |---|---|---|
-| 桥地址 | `http://192.168.x.x:8765` | `https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+| 桥地址 | `http://192.168.x.x:8765` | `https://raw.githubusercontent.com/<owner>/<repo>/<branch>`（**国内用镜像见下**，否则屏幕报「网络不通」） |
 | 实时性 | 实时（3 分钟刷新） | 最近一次推送（默认每 10 分钟） |
 | PC 要求 | 与 Kindle 同一网络 | 能上网即可，不需要公网 IP / 端口映射 / 穿透 |
 | PC 关机 | 看板报错 | 继续显示最后一次快照 |
@@ -172,7 +172,19 @@ python publish_snapshot.py --once --dry-run   # 取一次封面但不上传
 python publish_snapshot.py --once             # 真推一次
 python publish_snapshot.py --loop             # 持续推送（默认每 600 秒 / 10 分钟）
 ```
-5. Kindle 端「设置桥地址」填 `https://raw.githubusercontent.com/<owner>/<repo>/<branch>`（插件会自动拼上 `/cover.png`）。
+5. Kindle 端「设置桥地址」填下面两类之一（插件会自动拼上 `/cover_dark.png` 或 `/cover_light.png`（按主题）以及 `/status.json`，**无需手动加文件名**）：
+
+   - **境外 / 能直连 GitHub 的用户**：`https://raw.githubusercontent.com/<owner>/<repo>/<branch>`
+   - **中国大陆用户（推荐，否则屏幕报「网络不通」）**：`raw.githubusercontent.com` 在国内常被墙 / 超时，直连拉不到图，改用国内可直连的镜像：
+
+     | 镜像 | Kindle 该填的桥地址 |
+     |---|---|
+     | **jsDelivr**（推荐，CDN 稳定） | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>` |
+     | **ghproxy.net**（备用，更新更即时） | `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+
+     > ⚠️ 镜像地址格式：jsDelivr 用的是 `@分支`（不是 `/分支`）。镜像对文件有**数分钟缓存**，所以远程刷新会比 10 分钟间隔再慢一点点，属正常；ghproxy 不缓存、更即时但依赖第三方可用性。
+     >
+     > 例：本项目的演示中继仓库若叫 `wb-board-xxxxxx`、分支 `main`，jsDelivr 地址即 `https://cdn.jsdelivr.net/gh/<owner>/wb-board-xxxxxx@main`。
 
 **仓库不会膨胀（默认自动处理）**
 
@@ -214,7 +226,7 @@ python publish_snapshot.py --loop             # 持续推送（默认每 600 秒
    - ⚠️ 桥必须在**用户的交互登录会话**里跑——它要读 `~/.workbuddy/workbuddy.db` 才能拿到「空间-任务名」；在 SYSTEM / 无桌面会话下起，会读不到库而把任务名降级成「对话 / 上下文压缩」这类浏览器操作名。所以走「登录后自启」即可，别改成系统级服务。
 2. **发布器自启**：把 `publish_snapshot.vbs` 的快捷方式也放进「启动」文件夹。它后台静默跑 `publish_snapshot.py --loop`，按 `interval` 持续把封面推到 GitHub 快照仓库。
 
-> 两者都进启动文件夹后，整条链路（桥渲染 → 发布器推送 → Kindle 拉 raw 直链）在每次开机后自动闭环，正是「电脑重启也能刷得出来」的状态。
+> 两者都进启动文件夹后，整条链路（桥渲染 → 发布器推送 → Kindle 拉快照（raw 或镜像））在每次开机后自动闭环，正是「电脑重启也能刷得出来」的状态。
 
 - 仓库是 Public 的：URL 只有知道的人才能访问，但**任务名和积分余额会出现在那张 PNG 上**。介意就把仓库名设得足够随机，或在 `publish.ini` 里设 `push_status = false` 少推一份 JSON。
 
