@@ -179,12 +179,12 @@ python publish_snapshot.py --loop             # keep pushing (every 600s / 10 mi
 
      | Mirror | Bridge URL for the Kindle |
      |---|---|
-     | **jsDelivr** (recommended, stable CDN) | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>` |
-     | **ghproxy.net** (fallback, more instant updates) | `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+     | **ghproxy.net** (recommended, verified stable) | `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+     | **jsDelivr** (fallback, CDN can time out) | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>` |
 
-     > ⚠️ Mirror URL format: jsDelivr uses `@branch` (not `/branch`). Mirrors cache files for **a few minutes**, so remote refresh will lag slightly beyond the 10-min interval — that is normal; ghproxy does not cache and is more instant but depends on a third party.
+     > ⚠️ Mirror URL format: jsDelivr uses `@branch` (not `/branch`). jsDelivr's CDN can time out intermittently (verified: connection failures that make the plugin fall back to the text board), so **ghproxy.net is the more reliable choice**; mirrors cache files for **a few minutes**, so remote refresh lags slightly beyond the 10-min interval — normal.
      >
-     > Example: if your relay repo is `wb-board-xxxxxx` on branch `main`, the jsDelivr URL is `https://cdn.jsdelivr.net/gh/<owner>/wb-board-xxxxxx@main`.
+     > Example: if your relay repo is `wb-board-xxxxxx` on branch `main`, the ghproxy URL is `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/wb-board-xxxxxx/main`.
 
 **The repo does not bloat (handled automatically)**
 

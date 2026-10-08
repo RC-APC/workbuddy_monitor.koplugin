@@ -179,12 +179,12 @@ python publish_snapshot.py --loop             # 持续推送（默认每 600 秒
 
      | 镜像 | Kindle 该填的桥地址 |
      |---|---|
-     | **jsDelivr**（推荐，CDN 稳定） | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>` |
-     | **ghproxy.net**（备用，更新更即时） | `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+     | **ghproxy.net**（推荐，实测稳定直连） | `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
+     | **jsDelivr**（备选，CDN 偶发超时） | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>` |
 
-     > ⚠️ 镜像地址格式：jsDelivr 用的是 `@分支`（不是 `/分支`）。镜像对文件有**数分钟缓存**，所以远程刷新会比 10 分钟间隔再慢一点点，属正常；ghproxy 不缓存、更即时但依赖第三方可用性。
+     > ⚠️ 镜像地址格式：jsDelivr 用的是 `@分支`（不是 `/分支`）。jsDelivr 走 CDN 偶发超时（实测会返回连接失败、插件退回文字看板），**ghproxy.net 实测稳定，建议优先**；镜像对文件有**数分钟缓存**，所以远程刷新会比 10 分钟间隔再慢一点点，属正常。
      >
-     > 例：本项目的演示中继仓库若叫 `wb-board-xxxxxx`、分支 `main`，jsDelivr 地址即 `https://cdn.jsdelivr.net/gh/<owner>/wb-board-xxxxxx@main`。
+     > 例：本项目的演示中继仓库若叫 `wb-board-xxxxxx`、分支 `main`，ghproxy 地址即 `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/wb-board-xxxxxx/main`。
 
 **仓库不会膨胀（默认自动处理）**
 
