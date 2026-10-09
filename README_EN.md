@@ -60,7 +60,7 @@ workbuddy-koreader-monitor/
 ├── cookies.txt.example           # cookies.txt template + how to grab the cookie
 ├── credits.example.json          # static credits template
 ├── tasks.example.json            # static tasks template
-├── assets/                       # example cover images (dark / light)
+├── assets/                       # example images (cover dark/light, personalization settings, greeting comparison)
 └── README.md / README_EN.md      # Chinese / English docs
 ```
 
@@ -219,6 +219,26 @@ Remote mode pushes one **fixed-size** image, and the plugin displays it 1:1 (it 
 - **Not sure of your resolution?** Trigger the board once from the plugin menu; the error / info page prints `screen: WxH`, which is your actual device resolution.
 - **One device**: set `width` / `height` to its resolution and the remote snapshot fills perfectly.
 - **Multiple devices**: one image serves one resolution — whatever you put in `ini`, that device is perfect while the others see a *center-cropped* slice. Either set `ini` for the device you use most and change + re-push when you switch, or **use LAN mode** instead (the plugin renders per-device on the fly, so it never crops).
+
+### Personalized cover (greeting name · blessing · buddy pet)
+
+The cover carries your personal touch. Everything is drawn by the PC-side bridge at render time — no setup needed on the Kindle:
+
+- **Header greeting**: a random blessing that changes on every refresh, drawn on the same line as the header subtitle (right-aligned), directly above the SYNC timestamp. It can be prefixed with your name: if you have set what WorkBuddy should call you, it shows as "Name, +blessing"; if not, only the blessing is shown (never a cryptic ID).
+- **Buddy pet**: a Claude Code `/buddy`-style ASCII terminal pet in the empty right side of the credits band (species artwork from [ramarivera/coding-buddy](https://github.com/ramarivera/coding-buddy), 20 species: duck / cat / ghost / robot / dragon…). While a task is running it stays awake with `°°` eyes; with nothing running it closes its eyes and drifts Zzz's.
+- **Species (fully automatic, zero config)**: which species you get is decided by hashing your **local WorkBuddy account UID** (`claw.legacyOwnerUid` in `~/.workbuddy/settings.json`, stable per machine, identical on LAN and cloud) — the same account always gets the same pet, different users get different ones, nothing to fill in.
+
+**To change the name in the greeting**: open the WorkBuddy desktop app and go to **Settings → Personalization**, then fill in **"WorkBuddy 对你的称呼" (What WorkBuddy calls you)** (no bridge restart needed — every render re-reads it):
+
+![WorkBuddy personalization settings: fill in "What WorkBuddy calls you"](assets/personalization_settings.png)
+
+With a name set vs. without one:
+
+| Name set | No name set |
+| --- | --- |
+| ![Name set: 大葱, + blessing](assets/cover_greeting_named.png) | ![No name: blessing only](assets/cover_greeting_empty.png) |
+
+Leave it empty and only the blessing shows. Note: `display_name` / `user_id` in `publish.ini` are **no longer read** (identity now comes fully and automatically from the local WorkBuddy account, so LAN and cloud behave identically).
 
 ### Autostart (remote board recovers after reboot)
 

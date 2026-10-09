@@ -20,6 +20,7 @@ Run:  python wb-bridge.py        (listens on 0.0.0.0:8765)
 """
 import json
 import os
+import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -69,6 +70,60 @@ def _load(name, default):
         except Exception as e:
             print("warn: cannot read %s: %s" % (name, e))
     return default
+
+
+def _local_wb_identity():
+    """Local WorkBuddy identity used for the cover.
+
+    * user_id (buddy pet key): the stable LOCAL WorkBuddy account UID, present
+      for every install, identical on LAN and cloud. Source #1:
+      claw.legacyOwnerUid in settings.json; Source #2: the
+      `user-<uid>-personal` directory name. Always used for the pet, so one
+      account always gets the same pet with zero config.
+    * display_name (greeting name before the blessing): a friendly name the
+      client MAY have recorded in USER.md ("What to call them" / "Name").
+      Used ONLY when it is actually filled in; when it isn't, the greeting
+      shows NO name at all (just the blessing) -- never a raw account UID.
+    """
+    HOME = os.path.expanduser("~")
+    wb = os.path.join(HOME, ".workbuddy")
+    uid = ""
+    name = ""
+    # account UID
+    try:
+        sp = os.path.join(wb, "settings.json")
+        if os.path.isfile(sp):
+            with open(sp, "r", encoding="utf-8", errors="ignore") as f:
+                s = json.load(f)
+            u = (s.get("claw") or {}).get("legacyOwnerUid") or ""
+            if u:
+                uid = u.strip()
+    except Exception:
+        pass
+    if not uid:
+        try:
+            for n in os.listdir(wb):
+                if n.startswith("user-") and n.endswith("-personal"):
+                    uid = n[len("user-"):-len("-personal")].strip()
+                    break
+        except Exception:
+            pass
+    # friendly greeting name from USER.md, ONLY if filled in
+    try:
+        up = os.path.join(wb, "USER.md")
+        if os.path.isfile(up):
+            with open(up, "r", encoding="utf-8", errors="ignore") as f:
+                txt = f.read()
+            for key in ("What to call them", "Name"):
+                m = re.search(r"%s:\s*(.+)" % re.escape(key), txt)
+                if m:
+                    cand = m.group(1).strip().strip("\"'`* ")
+                    if cand and cand.lower() not in ("_", "(未指定)", "待确认", ""):
+                        name = cand
+                        break
+    except Exception:
+        pass
+    return name, uid
 
 
 def build_status():
@@ -159,12 +214,23 @@ def build_status():
     # running first (by recency), done at the end
     merged.sort(key=lambda t: 0 if str(t.get("status", "")).lower() == "running" else 1)
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    # Identity for the cover:
+    #   user_id (pet)   -> local WorkBuddy account UID, auto for every user,
+    #                      same on LAN/cloud -> one account = one pet, always.
+    #   display_name    -> friendly name from USER.md ONLY when filled in;
+    #                      otherwise EMPTY (greeting shows no name, just the
+    #                      blessing). Never falls back to the account UID.
+    name, uid = _local_wb_identity()
+    user_id = uid
+    display_name = name
     return {
         "source": "workbuddy",
         "updatedAt": now,
         "credits": credits,
         "tasks": merged,
         "taskMeta": session_meta,
+        "displayName": display_name,
+        "userId": user_id,
         # surfaced so a missing-Pillow runtime (e.g. a bare managed
         # pythonw that lacks the module) is visible instead of producing
         # silent cover-render failures. The double-click vbs reads this too.

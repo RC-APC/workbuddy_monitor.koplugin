@@ -19,7 +19,9 @@ device; it is NOT what ships to the Kindle.
 Three task layouts (task_layout=): "rows" | "grouped" | "hero".
 Pure Pillow. Called by wb-bridge.py for the /cover.png route.
 """
+import hashlib
 import io
+import random
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -40,6 +42,125 @@ for _p in FONT_PATHS:
 
 def _font(size):
     return ImageFont.truetype(_FONT_PATH, size)
+
+
+# A fresh, random blessing is drawn next to the user's display name on every
+# render, so the cover feels alive across refreshes. No emoji on purpose:
+# the cover is rendered with a CJK font (simhei) on the PC and shipped as a
+# grayscale PNG -- emoji glyphs would render as tofu boxes on e-ink.
+_BLESSINGS = [
+    "愿你今天也元气满满",
+    "保持热爱，奔赴山海",
+    "慢慢来，比较快",
+    "今天的你也很努力呀",
+    "好事正在发生",
+    "深呼吸，一切都会好的",
+    "小步快跑，静待花开",
+    "愿你被这个世界温柔以待",
+    "码到成功，bug 退散",
+    "进度条在动，就很棒",
+    "今天也要好好吃饭",
+    "累了就歇会儿，正在充电",
+    "你比昨天的自己更厉害",
+    "前路漫漫亦灿灿",
+    "心若安定，处处是归途",
+    "保持好奇，保持自由",
+    "所念皆所愿，所行化坦途",
+    "温柔且坚定，知足且上进",
+    "把日子过成自己喜欢的样子",
+    "一切尽意，百事从欢",
+]
+
+
+# --- personal buddy pet -----------------------------------------------------
+# Authentic Claude Code `/buddy` ASCII-art companions. Species art taken from
+# ramarivera/coding-buddy (MIT) -- the project that revived `/buddy` -- so the
+# cover pet looks EXACTLY like the terminal buddy: real monospace text, {E} is
+# the eye glyph slot. Drawn in the otherwise-empty right side of the credits
+# band; awake (° eyes) while a task runs, asleep (· eyes + Zzz) otherwise.
+# Grayscale-safe: the sprite is plain light-on-dark text, no hue involved.
+#
+# WHICH SPECIES YOU GET IS DETERMINISTIC, not random: it is picked by hashing
+# the user's stable WorkBuddy account UID (bridge -> status.userId), so the
+# same user always sees the same buddy across refreshes while different users
+# get different ones -- a per-user draw from the species below.
+
+_BUDDY_ART = {
+    "duck":     ["", "    __      ", "  <({E} )___  ", "   (  ._>   ", "    `--'    "],
+    "goose":    ["", "     (°>    ", "     ||     ", "   _(__)_   ", "    ^^^^    "],
+    "blob":     ["", "   .----.   ", "  ( {E}  {E} )  ", "  (      )  ", "   `----'   "],
+    "cat":      ["", r"   /\_/\    ", r"  ( {E}   {E})  ", "  (  ω  )   ", '  (")_(")   '],
+    "dragon":   ["", r"  /^\  /^\  ", " <  {E}  {E}  > ", " (   ~~   ) ", "  `-vvvv-'  "],
+    "octopus":  ["", "   .----.   ", "  ( {E}  {E} )  ", "  (______)  ", r"  /\/\/\/\  "],
+    "owl":      ["", r"   /\  /\   ", "  (({E})({E}))  ", "  (  ><  )  ", "   `----'   "],
+    "penguin":  ["", "  .---.     ", "  ({E}>{E})     ", r" /(   )\    ", "  `---'     "],
+    "turtle":   ["", "   _,--._   ", "  ( {E}  {E} )  ", r" /[______]\ ", "  ``    ``  "],
+    "snail":    ["", " {E}    .--.  ", r"  \  ( @ )  ", r"   \_`--'   ", "  ~~~~~~~   "],
+    "ghost":    ["", "   .----.   ", r"  / {E}  {E} \  ", "  |      |  ", "  ~`~``~`~  "],
+    "axolotl":  ["", r"}~(______)~{", r"}~({E} .. {E})~{", "  ( .--. )  ", r"  (_/  \_)  "],
+    "capybara": ["", "  n______n  ", " ( {E}    {E} ) ", " (   oo   ) ", "  `------'  "],
+    "cactus":   ["", " n  ____  n ", " | |{E}  {E}| | ", " |_|    |_| ", "   |    |   "],
+    "robot":    ["", "   .[||].   ", "  [ {E}  {E} ]  ", "  [ ==== ]  ", "  `------'  "],
+    "rabbit":   ["", r"   (\__/)   ", "  ( {E}  {E} )  ", " =(  ..  )= ", '  (")__(")  '],
+    "mushroom": ["", " .-o-OO-o-. ", "(__________)", "   |{E}  {E}|   ", "   |____|   "],
+    "chonk":    ["", r"  /\    /\  ", " ( {E}    {E} ) ", " (   ..   ) ", "  `------'  "],
+    "pikachu":  ["", r"   /\_/\   ", "  ({E} {E})  ", "   (  ω )   ", "   (__)    "],
+    "wyvern":   ["}       {", r"|\^```^/|", r"\ {E}' '{E} /", " ≈(° °)≈", "   '-'"],
+}
+
+
+def _buddy_style_for(uid):
+    """Deterministic species pick from the user id (md5, stable across runs)."""
+    key = str(uid or "").strip() or "guest"
+    h = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
+    return list(_BUDDY_ART.keys())[h % len(_BUDDY_ART)]
+
+
+# The sprite must render with a real MONOSPACE font or the ASCII art falls
+# apart (Proportional CJK fonts shift every glyph). Consolas first: it covers
+# °, ω and ≈ and has the classic terminal look.
+_MONO_FONT_PATHS = [
+    "C:/Windows/Fonts/consola.ttf",
+    "C:/Windows/Fonts/cour.ttf",
+    "C:/Windows/Fonts/lucon.ttf",
+]
+_MONO_FONT = None
+for _p in _MONO_FONT_PATHS:
+    try:
+        ImageFont.truetype(_p, 20)
+        _MONO_FONT = _p
+        break
+    except Exception:
+        continue
+
+
+def _bfont(size):
+    return ImageFont.truetype(_MONO_FONT or _FONT_PATH, size)
+
+
+def _buddy_pet(d, cx, cy, fsize, awake, P, theme="dark", uid=None):
+    """Draw the user's buddy as authentic `/buddy` ASCII art (monospace font),
+    centred on (cx, cy). Awake: open °-eyes + a task running; asleep: drowsy
+    ·-eyes and a Zzz drifting up-LEFT (the top-right corner hosts LIVE)."""
+    art = _BUDDY_ART[_buddy_style_for(uid)]
+    eye = "\u00b0" if awake else "\u00b7"
+    lines = [ln.replace("{E}", eye) for ln in art]
+    f = _bfont(fsize)
+    lh = int(fsize * 1.18)
+    widest = max(int(d.textlength(ln, font=f)) for ln in lines) or 1
+    th = lh * len(lines)
+    ox = int(cx - widest / 2)
+    oy = int(cy - th / 2)
+    for i, ln in enumerate(lines):
+        if ln.strip():
+            d.text((ox, oy + i * lh), ln, font=f,
+                   fill=P["WHITE"] + (255,), anchor="la")
+    if not awake:
+        zc = P["LGRAY"]
+        _text(d, (ox - 12, oy + 4), "z", 15, zc, anchor="la")
+        _text(d, (ox - 24, oy - 10), "Z", 19, zc, anchor="la")
+        _text(d, (ox - 38, oy - 26), "Z", 24, zc, anchor="la")
+
 
 
 def _mono_palette():
@@ -434,13 +555,36 @@ def render_cover(status, w=1080, h=1440, task_layout="grouped", mono=True,
     cur_x = x0 + d.textlength("WORKBUDDY", font=_font(66)) + 18
     d.rectangle([cur_x, y + 8, cur_x + 26, y + 66], fill=P["WHITE"] + (255,))
     y += 84
+    # --- header sub-line -----------------------------------------------------
+    # The personal greeting (display name + a fresh random blessing each render)
+    # sits on the SAME baseline as the "// STATUS MONITOR" sub-title, i.e. it is
+    # PARALLEL to the sub-title, and is RIGHT-ALIGNED so it is drawn DIRECTLY
+    # ABOVE the SYNC timestamp (which is the next line, also right-aligned).
+    sub_txt = "// STATUS MONITOR  -  AGENT-AGNOSTIC"
     if mono:
-        _text(d, (x0, y), "// STATUS MONITOR  -  AGENT-AGNOSTIC", 26, P["LGRAY"],
-              anchor="lt")
+        _text(d, (x0, y), sub_txt, 26, P["LGRAY"], anchor="lt")
     else:
-        _neon(d, (x0, y), "// STATUS MONITOR  -  AGENT-AGNOSTIC", 26, P["LGRAY"],
-              P["LGRAY"], anchor="lt", spread=2, alpha=80)
-    y += 50
+        _neon(d, (x0, y), sub_txt, 26, P["LGRAY"], P["LGRAY"],
+              anchor="lt", spread=2, alpha=80)
+    greet_name = (status.get("displayName") or "").strip()
+    blessing = random.choice(_BLESSINGS)
+    greet = (greet_name + "，" if greet_name else "") + blessing
+    # keep the greeting clear of the sub-title on the left
+    gf = _font(22)
+    sub_w = d.textlength(sub_txt, font=_font(26))
+    max_greet_w = (xr - 18) - (x0 + sub_w + 28)
+    while greet and d.textlength(greet, font=gf) > max_greet_w and len(greet) > 1:
+        # trim from the blessing tail, preserving "name，" when present
+        if greet_name and greet.startswith(greet_name + "，"):
+            greet = greet_name + "，…"
+            break
+        greet = greet[:-1]
+    if mono:
+        _text(d, (xr, y), greet, 22, P["LGRAY"], anchor="rt")
+    else:
+        _neon(d, (xr, y), greet, 22, P["LGRAY"], P["LGRAY"],
+              anchor="rt", spread=2, alpha=80)
+    y += 36
     upd = status.get("updatedAt", "?")
     _text(d, (xr, y), "SYNC " + str(upd), 22, P["MGRAY"], anchor="rt")
     y += 16
@@ -486,6 +630,15 @@ def render_cover(status, w=1080, h=1440, task_layout="grouped", mono=True,
         _neon(d, (x0, y), f"{rem:,.0f}", 122, P["WHITE"], P["LGRAY"], anchor="lt")
     _text(d, (x0 + 380, y + 26), "REMAINING", 24, P["MGRAY"], anchor="lt")
     _text(d, (x0 + 380, y + 58), "POINTS", 24, P["MGRAY"], anchor="lt")
+    # personal buddy pet: authentic `/buddy` ASCII art (species deterministic
+    # from the user_id), awake (° eyes) when at least one task is running,
+    # asleep (· eyes + Zzz) otherwise. Fills the otherwise-empty right side of
+    # the credits band. `fsize` is the MONOSPACE font size of the sprite.
+    running_now = sum(
+        1 for t in (status.get("tasks") or [])
+        if str(t.get("status", "")).lower() == "running")
+    _buddy_pet(d, xr - 80, y + 60, 22, running_now > 0, P, theme=theme,
+               uid=status.get("userId"))
     y += 132
 
     # used / total + plan line
@@ -645,6 +798,7 @@ if __name__ == "__main__":
     sample = {
         "source": "workbuddy",
         "updatedAt": today.strftime("%Y-%m-%d %H:%M:%S"),
+        "displayName": "Cong",
         "credits": {
             "remaining": 5335,
             "used": 2553,

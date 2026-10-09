@@ -32,6 +32,15 @@ repo = 你的仓库名
 branch = main
 token = github_pat_xxxxxxxxxxxxxxxxxxxxxxxxx
 
+# ⚠️ 以下两个字段已不再被桥读取（历史遗留，仅占位）。
+# 封面身份现在全自动取自本地 WorkBuddy：
+#   宠物  -> 账号 UID（~/.workbuddy/settings.json 的 claw.legacyOwnerUid，
+#            局域网/云端一致，同一账号永远同一只，零配置）
+#   问候名 -> ~/.workbuddy/USER.md 里「What to call them / Name」填的称呼，
+#            没填就只显示祝福语
+#display_name =
+#user_id =
+
 # 仓库内的文件路径（一般不用改）
 # ⚠️ 现在每次推送会同时上传 cover_dark.png 和 cover_light.png 两份，
 #    远程模式下的「换肤」靠 Kindle 自己选文件名，所以这里不用再指定单张。
