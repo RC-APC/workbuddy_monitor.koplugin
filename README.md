@@ -159,7 +159,7 @@ PC 桥（本地，只出站）  --定时推送-->  GitHub 仓库  --直链-->  �
 |       | 局域网直连                     | 远程快照                                                                                 |
 | ----- | ------------------------- | ------------------------------------------------------------------------------------ |
 | 桥地址   | `http://192.168.x.x:8765` | `https://raw.githubusercontent.com/<owner>/<repo>/<branch>`（**国内用镜像见下**，否则屏幕报「网络不通」） |
-| 实时性   | 实时（3 分钟刷新）                | 最近一次推送（默认每 10 分钟）                                                                    |
+| 实时性   | 实时（3 分钟刷新）                | 最近一次推送（默认每 5 分钟）                                                                    |
 | PC 要求 | 与 Kindle 同一网络             | 能上网即可，不需要公网 IP / 端口映射 / 穿透                                                           |
 | PC 关机 | 看板报错                      | 继续显示最后一次快照                                                                           |
 
@@ -174,7 +174,7 @@ PC 桥（本地，只出站）  --定时推送-->  GitHub 仓库  --直链-->  �
 python publish_snapshot.py --check            # 验证仓库与 token，打印 Kindle 该填的地址
 python publish_snapshot.py --once --dry-run   # 取一次封面但不上传
 python publish_snapshot.py --once             # 真推一次
-python publish_snapshot.py --loop             # 持续推送（默认每 600 秒 / 10 分钟）
+python publish_snapshot.py --loop             # 持续推送（默认每 300 秒 / 5 分钟）
 ```
 
 1. Kindle 端「设置桥地址」填下面两类之一（插件会自动拼上 `/cover_dark.png` 或 `/cover_light.png`（按主题）以及 `/status.json`，**无需手动加文件名**）：
@@ -184,7 +184,7 @@ python publish_snapshot.py --loop             # 持续推送（默认每 600 秒
      | -------------------------- | ------------------------------------------------------------------------------- |
      | **ghproxy.net**（推荐，实测稳定直连） | `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
      | **jsDelivr**（备选，CDN 偶发超时）  | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>`                           |
-     > ⚠️ 镜像地址格式：jsDelivr 用的是 `@分支`（不是 `/分支`）。jsDelivr 走 CDN 偶发超时（实测会返回连接失败、插件退回文字看板），**ghproxy.net 实测稳定，建议优先**；镜像对文件有**数分钟缓存**，所以远程刷新会比 10 分钟间隔再慢一点点，属正常。
+     > ⚠️ 镜像地址格式：jsDelivr 用的是 `@分支`（不是 `/分支`）。jsDelivr 走 CDN 偶发超时（实测会返回连接失败、插件退回文字看板），**ghproxy.net 实测稳定，建议优先**；镜像对文件有**数分钟缓存**，所以远程刷新会比 5 分钟间隔再慢一点点，属正常。
      >
      > 例：本项目的演示中继仓库若叫 `wb-board-xxxxxx`、分支 `main`，ghproxy 地址即 `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/wb-board-xxxxxx/main`。
 
@@ -196,12 +196,12 @@ python publish_snapshot.py --loop             # 持续推送（默认每 600 秒
 - 内容没变化时不产生 commit。
 - 公开的 raw 直链**始终不变**，Kindle 端不受影响。
 
-想保留完整历史才改 `history = append`（那时默认 600 秒间隔下约 144 commit/天，需要定期手动清）。
+想保留完整历史才改 `history = append`（那时默认 300 秒间隔下约 288 commit/天，需要定期手动清）。
 
 **注意**
 
 - 远程模式走 `https`，要求 KOReader 自带 `ssl.https`（lua-sec）。绝大多数版本都有；万一没有，看板报错页会显示 `https 支持: 不可用 (缺 ssl.https 模块)`。
-- `interval` 默认 600 秒（10 分钟）即可；`history = single` 下推送频率只影响 API 用量，不再影响仓库体积。
+- `interval` 默认 300 秒（5 分钟）；想更实时可调到 300 以下（如 120），但注意 force-push 频率。`history = single` 下推送频率只影响 API 用量，不再影响仓库体积。
 - 想常驻推送就双击 `publish_snapshot.vbs`（后台静默跑 `--loop`）；日志在 `publish.log`（由脚本自己写，因为 `pythonw` 没有控制台）。
 - 远程看到的是**快照**不是实时画面；PC 关机后保留最后一次推送的内容。
 - `publish.ini` 的 `width` / `height` = **推送到 GitHub 的封面尺寸**（远程模式是固定一张图，无法同时适配多机型）。**必须设成你主要看板的那台设备自身的屏幕分辨率**，否则该设备只会显示这张大图的「中心一块」（被裁切），看不到完整看板。常见机型取值见下方「远程模式该怎么填 width/height」。

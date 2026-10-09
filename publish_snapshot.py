@@ -314,9 +314,13 @@ def fetch_bytes(url, timeout=20):
         return r.read()
 
 
-def cover_url(cfg):
+def cover_url(cfg, theme="dark"):
+    """Per-theme cover URL from the local bridge. We now push BOTH a dark and a
+    light cover every cycle so the Kindle can switch skins in remote (cloud)
+    mode too -- there the static PNG's query string is ignored by the CDN and
+    the theme is baked into the FILE NAME (cover_dark.png / cover_light.png)."""
     return "%s/cover.png?w=%s&h=%s&layout=grouped&mono=1&theme=%s" % (
-        cfg["bridge"].rstrip("/"), cfg["width"], cfg["height"], cfg["theme"])
+        cfg["bridge"].rstrip("/"), cfg["width"], cfg["height"], theme)
 
 
 def base_url(cfg):
@@ -332,11 +336,26 @@ def cover_file_url(cfg):
 
 # ---- the actual push ----------------------------------------------------
 def publish_once(cfg, dry_run=False):
-    png = fetch_bytes(cover_url(cfg))
-    # PNG magic -- a bridge that is up but misconfigured returns HTML/JSON.
-    if not png.startswith(b"\x89PNG"):
-        raise RuntimeError("桥返回的不是 PNG（前 8 字节=%r）—— 检查 bridge/width/height"
-                           % png[:8])
+    # Push BOTH themes so the Kindle can switch skins in remote (cloud) mode.
+    # In remote mode the static file's query string is ignored by the CDN, so
+    # the theme must be baked into the file name: cover_dark.png / cover_light.png.
+    covers = {}
+    for theme in ("dark", "light"):
+        try:
+            data = fetch_bytes(cover_url(cfg, theme))
+        except Exception as e:
+            log("封面(主题=%s)获取失败: %s" % (theme, e))
+            continue
+        # PNG magic -- a bridge that is up but misconfigured returns HTML/JSON.
+        if not data.startswith(b"\x89PNG"):
+            log("桥返回的不是 PNG（主题=%s，前 8 字节=%r）—— 检查 bridge/width/height"
+                % (theme, data[:8]))
+            continue
+        covers[theme] = data
+
+    if not covers:
+        raise RuntimeError("两种主题封面都获取失败 —— 检查桥是否在运行 / width / height")
+
     status = None
     if cfg["push_status"]:
         try:
@@ -348,23 +367,35 @@ def publish_once(cfg, dry_run=False):
 
     msg = "workbuddy snapshot %s" % time.strftime("%Y-%m-%d %H:%M:%S")
     if dry_run:
-        log("dry-run: 封面 %d 字节, status.json %s —— 未上传"
-            % (len(png), ("%d 字节" % len(status)) if status else "不推送"))
-        log("dry-run: 目标 %s:%s/%s" % (cfg["owner"], cfg["repo"], cfg["png_path"]))
+        for theme, data in covers.items():
+            log("dry-run: cover_%s.png %d 字节" % (theme, len(data)))
+        log("dry-run: status.json %s —— 未上传"
+            % (("%d 字节" % len(status)) if status else "不推送"))
+        log("dry-run: 目标 %s:%s/ (cover_dark.png + cover_light.png)"
+            % (cfg["owner"], cfg["repo"]))
         log("dry-run: Kindle 桥地址填 → %s" % base_url(cfg))
-        log("dry-run: 封面直链（浏览器可验） → %s" % cover_file_url(cfg))
+        log("dry-run: 暗色直链 → %s/cover_dark.png" % base_url(cfg))
+        log("dry-run: 亮色直链 → %s/cover_light.png" % base_url(cfg))
         return True
 
-    files = [(cfg["png_path"], png)]
+    files = [("cover_%s.png" % theme, data) for theme, data in covers.items()]
+    # Backward-compat / fallback: also keep a plain `cover.png` (light-preferred)
+    # so an older single-cover plugin -- or a future Kindle-side fallback -- still
+    # resolves, and a stale single-cover publisher can never wipe the only file
+    # the current plugin needs. The single-commit tree is exactly `files`, so
+    # including cover.png here is what keeps it alive on GitHub.
+    fallback = covers.get("light") or covers.get("dark")
+    if fallback:
+        files.append(("cover.png", fallback))
     if status:
         files.append((cfg["json_path"], status))
 
     if str(cfg.get("history", "single")).lower() == "single":
         changed = push_single_commit(cfg, files, msg)
         if changed:
-            log("已发布 %s（%d 字节）%s —— 历史重写为单个 commit"
-                % (cfg["png_path"], len(png),
-                   ("+ status.json" if status else "")))
+            names = ", ".join(p for p, _ in files)
+            log("已发布 [%s]%s —— 历史重写为单个 commit"
+                % (names, (" + status.json" if status else "")))
         else:
             log("内容与远端一致，跳过（未产生 commit）")
         return True
@@ -434,8 +465,25 @@ def main():
             log("推送失败: %s" % e)
             return 1
 
-    log("开始持续推送，间隔 %d 秒，Ctrl+C 停止" % interval)
+    log("开始持续推送，间隔 %d 秒，Ctrl+C 停止（每轮自动重载 publish.ini）" % interval)
     while True:
+        # Re-read publish.ini every round so editing the config (interval, token,
+        # branch, ...) takes effect WITHOUT restarting the publisher.
+        try:
+            cfg = load_config(args.config)
+            validate(cfg)
+            # Re-read interval every round too, so editing it in publish.ini
+            # takes effect on the next cycle WITHOUT restarting the publisher.
+            if not args.interval:
+                interval = int(cfg["interval"] or 300)
+        except RuntimeError as e:
+            log(str(e))
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                log("已停止")
+                return 0
+            continue
         try:
             publish_once(cfg, args.dry_run)
         except KeyboardInterrupt:

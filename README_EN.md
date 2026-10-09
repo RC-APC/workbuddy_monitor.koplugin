@@ -182,7 +182,7 @@ python publish_snapshot.py --loop             # keep pushing (every 600s / 10 mi
      | **ghproxy.net** (recommended, verified stable) | `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/<repo>/<branch>` |
      | **jsDelivr** (fallback, CDN can time out) | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>` |
 
-     > ⚠️ Mirror URL format: jsDelivr uses `@branch` (not `/branch`). jsDelivr's CDN can time out intermittently (verified: connection failures that make the plugin fall back to the text board), so **ghproxy.net is the more reliable choice**; mirrors cache files for **a few minutes**, so remote refresh lags slightly beyond the 10-min interval — normal.
+     > ⚠️ Mirror URL format: jsDelivr uses `@branch` (not `/branch`). jsDelivr's CDN can time out intermittently (verified: connection failures that make the plugin fall back to the text board), so **ghproxy.net is the more reliable choice**; mirrors cache files for **a few minutes**, so remote refresh lags slightly beyond the 5-min interval — normal.
      >
      > Example: if your relay repo is `wb-board-xxxxxx` on branch `main`, the ghproxy URL is `https://ghproxy.net/https://raw.githubusercontent.com/<owner>/wb-board-xxxxxx/main`.
 
@@ -196,12 +196,12 @@ python publish_snapshot.py --loop             # keep pushing (every 600s / 10 mi
 - Identical content produces no commit at all.
 - The public raw URL **never changes**, so the Kindle setup is unaffected.
 
-Switch to `history = append` only if you actually want the history (then expect ~144 commits/day at the default 600s interval, needing periodic manual cleanup).
+Switch to `history = append` only if you actually want the history (then expect ~288 commits/day at the default 300s interval, needing periodic manual cleanup).
 
 **Notes**
 
 - Remote mode uses `https`, which needs `ssl.https` (lua-sec) in KOReader. Almost every build ships it; if not, the error board shows `https 支持: 不可用 (缺 ssl.https 模块)`.
-- The default `interval` is 600s (10 min); no need to go lower. Under `history = single` the interval only affects API usage, not repo size.
+- The default `interval` is 300s (5 min); go lower only if you want more real-time, but mind the force-push frequency. Under `history = single` the interval only affects API usage, not repo size.
 - `publish_snapshot.vbs` starts the pusher silently in the background (double-click = `--loop`); output goes to `publish.log` (the script writes it itself, because `pythonw` has no console).
 - You see a **snapshot**, not a live frame; the last push survives the PC going offline.
 - `publish.ini`'s `width` / `height` = **the cover size pushed to GitHub** (remote mode is one fixed-size image that can't serve multiple device sizes at once). **Set them to the screen resolution of the device you mainly view the board on** — otherwise that device only shows the *center crop* of the larger image, not the whole board. Common values are in "What width/height to set per device" below.

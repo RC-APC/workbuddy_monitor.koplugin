@@ -49,8 +49,8 @@ height = 1448
 #    Kindle 在远程模式下按自己的「配色」设置拉 cover_dark.png / cover_light.png。
 theme = dark
 
-# 推送间隔（秒）
-interval = 600
+# 推送间隔（秒）。300 = 5 分钟（与上面说明一致）
+interval = 300
 
 # 历史策略：
 #   single（默认）= 每次推送把仓库重写成「只有一个 commit」，旧对象被 GitHub 回收，
