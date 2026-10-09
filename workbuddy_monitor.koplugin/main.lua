@@ -72,7 +72,8 @@ local REFRESH_SEC = 180      -- 3 minutes: live dashboard tick.
 -- Auto-exit the dashboard if no FRESH cover has been fetched for this long
 -- (seconds). This is the "network died / bridge down / CDN unreachable" guard:
 -- without it a device can sit frozen on a stale, hours-old screen. Overridable
--- per-device via the config.txt line "auto_exit_stale=900"; absent => 15 min;
+-- per-device via the config.txt line "auto_exit_stale=<sec>"; absent => 15 min;
+--   0 or negative => disabled (never auto-exit to lock screen).
 -- set to a large number to effectively keep it on screen much longer.
 local AUTO_EXIT_STALE_SEC = 15 * 60
 
@@ -212,27 +213,31 @@ end
 -- socket module: in that case we optimistically proceed and let the real
 -- request fail with its own error path).
 local function bridge_reachable(base, probe_timeout)
-    local ok, socket = pcall(require, "socket")
-    if not (ok and socket and socket.tcp) then return true end
-    local host, port = tostring(base or ""):match("^https?://([^:/]+):?(%d*)")
-    if not host then return true end
-    -- No explicit port: 443 for https (remote cloud snapshot), 8765 for http
-    -- (the LAN bridge default -- every existing config relies on it).
-    port = (port and port ~= "") and tonumber(port)
-           or (is_https(base) and 443 or 8765)
-    probe_timeout = probe_timeout or 2
-    -- A remote host is orders of magnitude further away than a LAN peer; 2s
-    -- false-negatives over a slow public CDN and makes the plugin think the
-    -- bridge is down. Give https a much longer window: the GitHub raw CDN is
-    -- frequently slow from mainland China and a 4s TCP handshake timed out
-    -- there often enough to show a false "网络不通".
-    if is_https(base) and probe_timeout < 10 then probe_timeout = 10 end
-    local c = socket.tcp()
-    if not c then return true end
-    c:settimeout(probe_timeout)
-    local r = c:connect(host, port)
-    pcall(function() c:close() end)
-    return r == 1
+    local ok, res = pcall(function()
+        local ok2, socket = pcall(require, "socket")
+        if not (ok2 and socket and socket.tcp) then return true end
+        local host, port = tostring(base or ""):match("^https?://([^:/]+):?(%d*)")
+        if not host then return true end
+        -- No explicit port: 443 for https (remote cloud snapshot), 8765 for http
+        -- (the LAN bridge default -- every existing config relies on it).
+        port = (port and port ~= "") and tonumber(port)
+               or (is_https(base) and 443 or 8765)
+        probe_timeout = probe_timeout or 2
+        -- A remote host is orders of magnitude further away than a LAN peer; 2s
+        -- false-negatives over a slow public CDN and makes the plugin think the
+        -- bridge is down. Give https a much longer window: the GitHub raw CDN is
+        -- frequently slow from mainland China and a 4s TCP handshake timed out
+        -- there often enough to show a false "网络不通".
+        if is_https(base) and probe_timeout < 10 then probe_timeout = 10 end
+        local c = socket.tcp()
+        if not c then return true end
+        c:settimeout(probe_timeout)
+        local r = c:connect(host, port)
+        pcall(function() c:close() end)
+        return r == 1
+    end)
+    if not ok then return true end   -- on any error, optimistically proceed
+    return res == true
 end
 -- KOReader bundles "json"; some builds also have "cjson". Try both.
 local function json_decode(s)
@@ -324,13 +329,17 @@ function WorkBuddyMonitor:init()
                     if t == "light" or t == "dark" then THEME = t break end
                 end
             end
-            -- auto-exit-if-stale: config.txt "auto_exit_stale=900" (seconds);
-            -- 0/absent => default 15 min, negative => disabled.
+            -- auto-exit-if-stale: config.txt "auto_exit_stale=<sec>";
+            --   0 or negative => DISABLED (never auto-exit to lock screen);
+            --   absent => default 15 min (900 s).
             for _, ln in ipairs(lines) do
                 local s = ln:match("^%s*auto_exit_stale=%s*(%-?%d+)%s*$")
                 if s then
                     local v = tonumber(s)
-                    if v and v > 0 then AUTO_EXIT_STALE_SEC = v end
+                    if v then
+                        -- 0 / negative => disabled; positive => that many seconds
+                        AUTO_EXIT_STALE_SEC = (v >= 0) and v or 0
+                    end
                     break
                 end
             end
@@ -504,7 +513,15 @@ function WorkBuddyMonitor:onResume()
     local plugin = self
     UIManager:scheduleIn(2, function()
         if plugin._dashboard and not plugin._exiting then
-            plugin:_showImage(true, true)
+            -- contained: a wake-up refresh must never throw out of the
+            -- scheduler and freeze the device.
+            local ok, perr = pcall(function()
+                plugin:_showImage(true, true)
+            end)
+            if not ok then
+                errlog("WorkBuddyMonitor: onResume _showImage threw: %s",
+                       tostring(perr))
+            end
         end
     end)
 end
@@ -611,36 +628,43 @@ end
 --   3. force a full repaint, because an e-ink screen keeps showing the stale
 --      image until something below it actually refreshes.
 function WorkBuddyMonitor:_closeAllBoards()
-    if self.active_widget then
-        pcall(function() UIManager:close(self.active_widget) end)
-        self.active_widget = nil
-    end
+    -- Everything inside MUST be contained: this is called from exitDashboard,
+    -- which itself runs from a key/tap gesture handler. A throw here would
+    -- propagate into the input dispatch and freeze the whole device (only a
+    -- reboot recovers) -- so the entire body is wrapped, and every individual
+    -- step is ALSO pcall'd as a belt-and-suspenders.
     pcall(function()
-        local stack = UIManager._window_stack
-        if type(stack) ~= "table" then return end
-        for i = #stack, 1, -1 do
-            local w = stack[i]
-            if w and w._wb_board then
-                pcall(function() UIManager:close(w) end)
-                -- still there? UIManager:close() ignored it -> yank it by hand
-                if stack[i] == w then
-                    table.remove(stack, i)
+        if self.active_widget then
+            pcall(function() UIManager:close(self.active_widget) end)
+            self.active_widget = nil
+        end
+        pcall(function()
+            local stack = UIManager._window_stack
+            if type(stack) ~= "table" then return end
+            for i = #stack, 1, -1 do
+                local w = stack[i]
+                if w and w._wb_board then
+                    pcall(function() UIManager:close(w) end)
+                    -- still there? UIManager:close() ignored it -> yank it by hand
+                    if stack[i] == w then
+                        table.remove(stack, i)
+                    end
                 end
             end
-        end
-    end)
-    pcall(function() UIManager:setDirty(nil, "full") end)
-    pcall(function()
-        if UIManager.forceRePaint then UIManager:forceRePaint() end
-    end)
-    -- e-ink keeps the stale image until something forces a real waveform
-    -- refresh; without this the board can visibly stay on screen even after
-    -- its widget is gone.
-    pcall(function()
-        local ok, Event = pcall(require, "ui/event")
-        if ok and Event and Event.new and UIManager.broadcastEvent then
-            UIManager:broadcastEvent(Event:new("SetFullScreenRefresh"))
-        end
+        end)
+        pcall(function() UIManager:setDirty(nil, "full") end)
+        pcall(function()
+            if UIManager.forceRePaint then UIManager:forceRePaint() end
+        end)
+        -- e-ink keeps the stale image until something forces a real waveform
+        -- refresh; without this the board can visibly stay on screen even after
+        -- its widget is gone.
+        pcall(function()
+            local ok, Event = pcall(require, "ui/event")
+            if ok and Event and Event.new and UIManager.broadcastEvent then
+                UIManager:broadcastEvent(Event:new("SetFullScreenRefresh"))
+            end
+        end)
     end)
 end
 
@@ -715,7 +739,11 @@ local function fetch_json(url)
         end
         return nil, "LuaSocket 不可用 (此 KOReader 版本缺 socket.http)"
     end
-    local body, code = http.request(url)
+    -- http.request can THROW (not just return nil) on a malformed/odd
+    -- response, especially over TLS. Never let that escape: an uncaught throw
+    -- in the refresh path kills the UIManager scheduler and freezes the device.
+    local ok_req, body, code = pcall(http.request, url)
+    if not ok_req then return nil, "HTTP 请求异常: " .. tostring(body) end
     if not body then return nil, "HTTP " .. tostring(code) end
     return json_decode(body)
 end
@@ -885,7 +913,9 @@ function WorkBuddyMonitor:_scheduleStaleWatch()
     self.stale_timer = UIManager:scheduleIn(60, function()
         if self._exiting or self._gen ~= self._stale_gen then return end
         local last = self._last_refresh_ts or 0
-        if last > 0 and (os.time() - last) >= AUTO_EXIT_STALE_SEC then
+        -- AUTO_EXIT_STALE_SEC <= 0 => disabled: never auto-exit.
+        if AUTO_EXIT_STALE_SEC > 0 and last > 0 and
+           (os.time() - last) >= AUTO_EXIT_STALE_SEC then
             errlog("WorkBuddyMonitor: no fresh cover for %d s, auto-exiting dashboard",
                 os.time() - last)
             self:_staleAutoExit()
@@ -933,17 +963,35 @@ function WorkBuddyMonitor:_keepAwake(on)
         local ok, PluginShare = pcall(require, "pluginshare")
         if ok and PluginShare then
             PluginShare.pause_auto_suspend = on and true or nil
+            -- also coordinate with autosuspend's _schedule_kindle (it skips the
+            -- T1 reset when keepalive is active)
+            PluginShare.keepalive = on and true or nil
+        end
+    end)
+    -- (b) On Kindle the *real* "stay awake" lever is powerd's preventScreenSaver
+    -- flag. The autosuspend plugin's own T1 reset is a no-op stub on Kindle
+    -- (see autosuspend.koplugin:_schedule_kindle), so without this the
+    -- *firmware* suspends on its own ~10-15 min T1 timer -- the exact
+    -- "回退锁屏" symptom -- and it ignores auto_suspend_timeout_seconds.
+    -- This mirrors exactly what the built-in KeepAlive plugin does on Kindle.
+    pcall(function()
+        local ok, Device = pcall(require, "device")
+        if ok and Device and Device.isKindle and Device:isKindle() then
+            os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver "
+                        .. (on and "1" or "0"))
         end
     end)
     pcall(function()
         if not G_reader_settings then return end
-        -- (b) and neutralise the timeout setting itself
+        -- (c) park the timeout at a huge positive value (NOT 0): a 0 disables
+        -- the whole autosuspend plugin, killing its T1 reset on devices where
+        -- it is *not* stubbed, and 0 also reads as "disabled" at init.
         if on then
             if self._prev_autosuspend == nil then
                 self._prev_autosuspend =
                     G_reader_settings:readSetting("auto_suspend_timeout_seconds")
             end
-            G_reader_settings:saveSetting("auto_suspend_timeout_seconds", 0)
+            G_reader_settings:saveSetting("auto_suspend_timeout_seconds", 365*24*3600)
         else
             local prev = self._prev_autosuspend
             if prev == nil then prev = 15 * 60 end   -- KOReader default
@@ -969,7 +1017,10 @@ function WorkBuddyMonitor:showCover(auto)
     self._last_refresh_ts = os.time()   -- start the stale clock from entry
     self._stale_gen = self._gen
     self:_scheduleStaleWatch()
-    self:_showImage(true, false)
+    local ok, perr = pcall(function() self:_showImage(true, false) end)
+    if not ok then
+        errlog("WorkBuddyMonitor: initial _showImage threw: %s", tostring(perr))
+    end
 end
 
 -- Is there a previously downloaded cover we can keep showing while the bridge
@@ -1053,10 +1104,16 @@ function WorkBuddyMonitor:_showImage(auto, quiet)
     for attempt = 1, attempts do
         local f = io.open(tmp, "wb")
         if not f then self:_showBoard(true, quiet); return end
-        local rok, rinfo = http.request{
-            url = cover_url,
-            sink = ltn12.sink.file(f),
-        }
+        -- http.request can THROW on a malformed/odd TLS response; contain it so
+        -- it becomes a normal failed-download (quiet retry) instead of an
+        -- exception that escapes the refresh callback.
+        local ok_req, rok, rinfo = pcall(function()
+            return http.request{
+                url = cover_url,
+                sink = ltn12.sink.file(f),
+            }
+        end)
+        if not ok_req then rok, rinfo = nil, nil end
         -- ltn12.sink.file() closes the handle when the transfer finishes, so the
         -- file is ALREADY closed here. A second f:close() throws "closed file" ->
         -- guard it (this was the image-mode crash).
@@ -1309,7 +1366,24 @@ function WorkBuddyMonitor:_autoRefresh(old_widget)
     -- NOTE: the old widget is NOT closed here on purpose. _showImage only
     -- replaces it once a new PNG is actually in hand; if the fetch fails we
     -- keep showing the last good cover instead of blanking the screen.
-    self:_showImage(true, true)
+    --
+    -- CRITICAL: a thrown error inside a UIManager scheduled callback is NOT
+    -- caught by the framework on this KOReader build, so it propagates out of
+    -- the scheduler and corrupts the whole UI event loop -- the device then
+    -- freezes with dead input and only a reboot recovers. Any transient
+    -- failure in a refresh (network blip, odd JSON, decode hiccup) must
+    -- therefore be contained HERE: on error we just keep the last good cover
+    -- and re-arm the normal tick, instead of letting it kill the scheduler.
+    local ok, perr = pcall(function() self:_showImage(true, true) end)
+    if not ok then
+        errlog("WorkBuddyMonitor: _showImage threw in auto-refresh: %s",
+               tostring(perr))
+        if not self._exiting then
+            self.refresh_timer = UIManager:scheduleIn(REFRESH_SEC, function()
+                self:_autoRefresh(old_widget)
+            end)
+        end
+    end
 end
 
 -- ---- optional: persist the (PC-rendered) cover as the screensaver image ----
@@ -1455,12 +1529,15 @@ function WorkBuddyMonitor:_fetchCoverFile(path, exit_hint, timeout)
     local f = io.open(tmp, "wb")
     if not f then return false end
     http.TIMEOUT = timeout or 12
-    local rok, rinfo = http.request{
-        url = cover_fetch_url(Device.screen:getWidth(),
-                              Device.screen:getHeight(), exit_hint or 0),
-        sink = ltn12.sink.file(f),
-    }
+    local ok_req, rok, rinfo = pcall(function()
+        return http.request{
+            url = cover_fetch_url(Device.screen:getWidth(),
+                                  Device.screen:getHeight(), exit_hint or 0),
+            sink = ltn12.sink.file(f),
+        }
+    end)
     pcall(function() f:close() end)
+    if not ok_req then rok, rinfo = nil, nil end
     local good = false
     if cover_fetch_ok(rok, rinfo, tmp) then
         pcall(function() os.remove(path) end)
@@ -1487,11 +1564,11 @@ function WorkBuddyMonitor:_updateLockFile()
     -- Prefer the already-downloaded dashboard image: instant, offline, and
     -- literally "随看板最新更新" (a copy of the board's current cover).
     if type(self._last_cover) == "string" and is_png(self._last_cover) then
-        got = self:_copyFile(self._last_cover, dst)
+        pcall(function() got = self:_copyFile(self._last_cover, dst) end)
     end
     -- Fall back to a live fetch only when there is no dashboard image yet.
     if not got then
-        got = self:_fetchCoverFile(dst, 0, 20)
+        pcall(function() got = self:_fetchCoverFile(dst, 0, 20) end)
     end
     return got
 end
