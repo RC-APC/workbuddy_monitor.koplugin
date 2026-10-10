@@ -19,7 +19,7 @@ Source of truth (local, no API, no scraping):
 Status mapping (client value -> board value):
     working            -> running
     completed / error  -> done
-    pending            -> queued
+    pending            -> pending   (待用户确认：与 queued 排队区分，看板加边框 + 宠物半睁眼)
 
 Only the last `days` days are listed, newest activity first.
 
@@ -56,7 +56,7 @@ DB_CANDIDATES = [
 # Client status -> board status
 _STATUS_MAP = {
     "working": "running",
-    "pending": "queued",
+    "pending": "pending",
     "completed": "done",
     "error": "done",
     "cancelled": "done",
