@@ -6,6 +6,24 @@
 
 > 适用场景：你有一台吃灰的 Kindle，想在墨水屏上随时看到「这个月积分还剩多少、哪些任务在跑、哪些快到期」——不点亮手机、不打开电脑，翻一眼就行。
 
+## 🤖 配套安装 Skill（可选但推荐）
+
+仓库里附带一个 WorkBuddy 技能 `install-workbuddy-kindle-monitor/`，让**装插件这件事也交给 WorkBuddy**：你只需在 WorkBuddy 里说一句「帮我装 WorkBuddy Kindle 插件」，它就会带着你一步步走完（含所有防坑要点，不用自己查文档）。
+
+安装这个技能本身：
+
+```bash
+# 把技能文件夹放进 WorkBuddy 的用户级技能目录（全项目通用）
+cp -r install-workbuddy-kindle-monitor ~/.workbuddy/skills/
+
+# 或放进当前仓库的项目级技能目录（仅本仓库协作者可用）
+# cp -r install-workbuddy-kindle-monitor .workbuddy/skills/
+```
+
+放好后重启 WorkBuddy，对智能体说「安装 WorkBuddy Kindle 插件 / 设置墨水屏看板」即可触发。
+技能内含一份完整安装指引（`references/install-guide.md`）和一个处理 KOReader 文件锁的
+部署脚本（`scripts/deploy_kindle.py`），详见该目录。
+
 ## 功能特性
 
 - **常驻看板**：Kindle 上常驻显示，每 **3 分钟**自动刷新（从桥重新拉 PNG，时间戳同步更新，不会冻住）。
