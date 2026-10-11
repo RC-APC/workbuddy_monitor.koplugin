@@ -128,6 +128,43 @@ _GENERIC_CWD = re.compile(
 )
 
 
+def _load_aliases():
+    """cwd-last-segment -> human name, from space_alias.json next to this file.
+
+    The client DB has NO real space NAME (the `workspaces` table holds nothing
+    but paths, and `group_title` is populated on ~2 of 26 sessions), so the only
+    space signal available is the session's working directory -- whose last
+    segment is a FOLDER name like `my-project` / `research-notes`. On an e-ink
+    board that reads as noise. This table maps those to names the user actually
+    recognises. An empty value means "show no prefix for this space".
+    """
+    global _ALIAS_CACHE, _ALIAS_TS
+    try:
+        mtime = os.path.getmtime(_ALIAS_FILE)
+    except OSError:
+        return _ALIAS_CACHE or {}
+    if _ALIAS_CACHE is not None and mtime == _ALIAS_TS:
+        return _ALIAS_CACHE
+    data = {}
+    try:
+        with open(_ALIAS_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for k, v in (raw or {}).items():
+            if k.startswith("_"):       # _comment etc.
+                continue
+            data[k.strip().lower()] = (v or "").strip()
+    except Exception:
+        data = {}
+    _ALIAS_CACHE, _ALIAS_TS = data, mtime
+    return data
+
+
+_ALIAS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "space_alias.json")
+_ALIAS_CACHE = None
+_ALIAS_TS = None
+
+
 def _space_of(row):
     """The client-side SPACE (workspace) a session belongs to.
 
@@ -155,17 +192,45 @@ def _space_of(row):
 
 
 def _display_name(row):
-    """'空间 - 任务' when the space is meaningful, else just the task name.
+    """The complete task name exactly as the PC WorkBuddy client shows it,
+    prefixed with the space when the space is meaningful.
 
-    Without the prefix the board is ambiguous: three tasks called
-    "修复布局" in three different 空间 are indistinguishable on a 1-page e-ink
-    screen. The prefix is omitted only when the space adds nothing.
+    There is NO real space-name column in the client DB (workspaces holds
+    only paths; group_title is ~always NULL), so the space is derived from
+    the session cwd's last segment and humanised via space_alias.json.
+    Without the prefix, three tasks called "修复布局" in three different
+    spaces are indistinguishable on a 1-page e-ink screen; the prefix is
+    omitted when the space adds nothing (alias says so, or it is pure
+    folder-slug noise in front of a readable name).
     """
     name = _name_of(row)
     sp = _space_of(row)
     if not sp or sp in name:
         return name
+    alias = _load_aliases().get(sp.lower())
+    if alias is None and _is_slug_noise(sp, name):
+        # No alias configured AND the folder name is pure ASCII slug noise
+        # ("my-project", "temp_work") in front of a readable task name --
+        # that prefix confuses far more than it distinguishes. Drop it.
+        return name
+    sp = alias if alias is not None else sp
+    if not sp:
+        return name
     return "%s · %s" % (sp, name)
+
+
+def _is_slug_noise(space, name):
+    """True when `space` looks like a machine folder slug rather than a name.
+
+    Heuristic: all-ASCII (so Chinese folder names always survive) AND the task
+    name carries non-ASCII text, meaning the pair reads as "english-slug ·
+    中文任务" -- the classic noise case the board used to show.
+    """
+    if not space:
+        return False
+    if any(ord(ch) > 127 for ch in space):
+        return False
+    return any(ord(ch) > 127 for ch in name)
 
 
 def _is_noise(name):

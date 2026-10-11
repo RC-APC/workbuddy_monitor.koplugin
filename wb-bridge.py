@@ -137,6 +137,7 @@ def build_status():
         print("warn: fetch_credits failed: %s" % e)
         live = None
     auth_expired = bool(live.get("authExpired")) if live else False
+    stale = bool(live.get("stale")) if live else False
     no_cookie = bool(live.get("noCookie")) if live else False
     if live and (live.get("remaining") or 0) > 0:
         credits = {
@@ -147,15 +148,21 @@ def build_status():
             "cycle": live.get("cycle"),
             "expiring": live.get("expiring", []),
             "usage": live.get("usage"),
-            # keep the last-known balance visible, but flag it stale so the
-            # cover can shout "EXPIRED" instead of silently showing frozen LIVE
-            "live": not auth_expired,
+            # live only when freshly fetched AND authenticated
+            "live": (not auth_expired) and (not stale),
         }
     else:
         credits = _load("credits.json", {"remaining": 0, "expiring": []})
         credits["live"] = False
-    # surface auth failures to the cover so a dead cookie is NEVER silent
-    credits["authExpired"] = auth_expired
+        stale = True  # a static baseline is not live data
+    # authExpired (the loud EXPIRED chip) is reserved for the case where we
+    # have NO usable number at all (remaining <= 0). Whenever we still have a
+    # last-known-good, a cache, or the static credits.json baseline we mark it
+# `stale`
+    # (quiet gray "缓存" note) instead, so the board never screams EXPIRED
+    # over a real-looking number.
+    credits["authExpired"] = bool(auth_expired) and (credits.get("remaining") or 0) <= 0
+    credits["stale"] = stale
     credits["noCookie"] = no_cookie
     # 0) BEST SOURCE: the WorkBuddy client's OWN database
     #    (~/.workbuddy/workbuddy.db). It carries the exact task name shown in
@@ -164,6 +171,13 @@ def build_status():
     try:
         import wb_sessions
         session_tasks, session_meta = wb_sessions.fetch_sessions()
+        if not session_tasks:
+            # transient: the client holds a write lock on workbuddy.db and our
+            # 3s sqlite timeout fired -> one quick retry before falling back
+            # to the anonymous "对话/对话压缩" live-usage labels, which look
+            # far worse than a slightly delayed answer.
+            time.sleep(0.8)
+            session_tasks, session_meta = wb_sessions.fetch_sessions()
     except Exception as e:
         print("warn: wb_sessions failed: %s" % e)
         session_tasks, session_meta = [], {"ok": False, "why": str(e)}
@@ -298,6 +312,51 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 _log("COVER FAIL %s" % e)
                 self._send(500, {"error": str(e)})
+        elif u.path == "/board":
+            # Native-Kindle-browser / any-browser dashboard: a tiny self-
+            # refreshing HTML page that just shows the server-rendered PNG.
+            # All rendering stays server-side (cover_gen), so this works even
+            # on Kindle's experimental WebKit that can't run JS.
+            try:
+                qs = parse_qs(u.query)
+                theme = qs.get("theme", ["dark"])[0]
+                if theme not in ("dark", "light"):
+                    theme = "dark"
+                try:
+                    interval = int(qs.get("interval", ["30"])[0])
+                except ValueError:
+                    interval = 30
+                interval = max(5, min(interval, 600))
+                try:
+                    w = int(qs.get("w", ["1080"])[0])
+                    h = int(qs.get("h", ["1440"])[0])
+                except ValueError:
+                    w, h = 1080, 1440
+                w = max(200, min(w, 3000)); h = max(200, min(h, 4000))
+                ehint = qs.get("exit", ["0"])[0] != "0"
+                bg = "#000" if theme == "dark" else "#fff"
+                img_q = ("w=" + str(w) + "&h=" + str(h) + "&theme=" + theme +
+                         "&mono=1&layout=grouped&exit=" + ("1" if ehint else "0"))
+                html = (
+                    "<!doctype html><html><head><meta charset=\"utf-8\">"
+                    "<meta http-equiv=\"refresh\" content=\"" + str(interval) + "\">"
+                    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                    "<title>WorkBuddy 看板</title>"
+                    "<style>html,body{margin:0;padding:0;background:" + bg +
+                    ";height:100%}body{display:flex;align-items:center;"
+                    "justify-content:center}img{width:100%;height:auto}</style></head>"
+                    "<body><img src=\"/cover.png?" + img_q + "\"></body></html>"
+                )
+                data = html.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                _log("BOARD FAIL %s" % e)
+                self._send(500, {"error": str(e)})
         elif u.path == "/health":
             self._send(200, {"ok": True})
         else:
@@ -313,6 +372,7 @@ if __name__ == "__main__":
         print("WorkBuddy bridge listening on http://0.0.0.0:%d" % PORT)
         print("  status : http://<this-pc-ip>:%d/status.json" % PORT)
         print("  cover  : http://<this-pc-ip>:%d/cover.png?w=1080&h=1440" % PORT)
+        print("  board  : http://<this-pc-ip>:%d/board  (原生浏览器/任意浏览器自动刷新看板)" % PORT)
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")

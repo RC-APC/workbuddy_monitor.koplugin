@@ -398,13 +398,17 @@ def _task_row(d, x0, xr, y, t, P, mono, max_cre=0.0, rh=66, name_size=26):
 
     Returns next y (y + rh).
     """
-    # "空间名-任务名" when the task belongs to a real space (hyphen form per
-    # user preference -- the old "空间 · 任务" middle-dot display read like a
-    # browser-side name). Tasks with no meaningful space keep the bare client
-    # title, matching the desktop sidebar.
-    nm = str(t.get("name") or t.get("display") or "?")
-    sp = str(t.get("space") or "").strip()
-    name = "%s-%s" % (sp, nm) if sp and sp not in nm else nm
+    # `display` IS the complete task name shown on the PC WorkBuddy client.
+    # wb_sessions already resolves the space prefix through space_alias.json
+    # (my-project -> "我的项目") and drops folder-slug noise, so NEVER
+    # rebuild the prefix here from the raw `space` field -- doing that
+    # resurrected the english folder name on the board (2026-10-11).
+    if t.get("display"):
+        name = str(t["display"])
+    else:
+        nm = str(t.get("name") or "?")
+        sp = str(t.get("space") or "").strip()
+        name = "%s-%s" % (sp, nm) if sp and sp not in nm else nm
     st = str(t.get("status", "?")).lower()
     cre = t.get("credits")
 
@@ -527,7 +531,8 @@ def _tasks_hero(d, x0, xr, y, tasks, P, mono, bottom_limit):
                     outline=P["WHITE"] + (255,), width=3)
         card_text = P["WHITE"]
     _text(d, (x0 + 26, card_y + 20), "ACTIVE TASK", 24, card_text, anchor="lt")
-    _text(d, (x0 + 26, card_y + 56), str(primary.get("name", "?")), 40,
+    _text(d, (x0 + 26, card_y + 56),
+          str(primary.get("display") or primary.get("name") or "?"), 40,
           card_text, anchor="lt")
 
     rcx, rcy = xr - 100, card_y + card_h // 2 + 4
@@ -547,7 +552,9 @@ def _tasks_hero(d, x0, xr, y, tasks, P, mono, bottom_limit):
             break
         os_ = str(o.get("status", "?")).lower()
         _chip_right(d, xr, y, os_.upper(), os_, P, mono, size=18, h=26, pad=8)
-        _text(d, (x0 + 10, y), f"- {o.get('name', '?')}", 22, P["MGRAY"], anchor="lt")
+        _text(d, (x0 + 10, y),
+              f"- {o.get('display') or o.get('name') or '?'}", 22,
+              P["MGRAY"], anchor="lt")
         y += 32
     return y
 
@@ -625,36 +632,32 @@ def render_cover(status, w=1080, h=1440, task_layout="grouped", mono=True,
     d.line([(m + 12, y), (w - m - 12, y)], fill=P["WHITE"] + (160,), width=2)
     y += 40
 
-    # ---- AUTH FAILURE ALARM (top, full-width inverted bar = loudest on e-ink)
-    # A dead cookie shows frozen numbers that look like LIVE data, so we must
-    # shout. noCookie (no cookies.txt / WB_COOKIE) is a softer config hint.
-    cr_top = status.get("credits", {}) or {}
-    if cr_top.get("authExpired"):
-        if cr_top.get("noCookie"):
-            amsg = "▲ 未找到 cookies.txt 请在桥接目录放置并填入"
-        else:
-            amsg = "▲ 登录已失效 请刷新 cookies.txt"
-        ay = y + 2
-        d.rectangle([m + 12, ay, w - m - 12, ay + 46],
-                    fill=P["WHITE"] + (255,), outline=None)
-        _text(d, ((x0 + xr) // 2, ay + 23), amsg, 24, P["INK"], anchor="mm")
-        y = ay + 46 + 14
+    # NOTE: the loud full-width "登录已失效 请刷新 cookies.txt" banner was
+    # REMOVED at the user's request (2026-10-11). The sole auth-expiry signal is
+    # now the small inverted "EXPIRED" chip drawn next to the CREDITS line below
+    # (see the `authExpired` branch further down) -- which is enough and far less
+    # intrusive.
 
     # credits remaining
     cr = status.get("credits", {}) or {}
     live = cr.get("live", False)
     auth_expired = cr.get("authExpired", False)
+    stale = cr.get("stale", False)
     _text(d, (x0, y), "\u25c6 CREDITS", 30, P["WHITE"], anchor="lt")
     if auth_expired:
-        # inverted alarm chip (white block + black ink) -- the loudest marker
+        # Only when we have NO usable number at all (remaining <= 0) do we
+        # shout: inverted alarm chip (white block + black ink). With a
+        # last-known-good / baseline figure present we stay quiet ("缓存").
         btxt = "EXPIRED"
         bf = _font(22)
         bw_ = d.textlength(btxt, font=bf) + 20
         d.rectangle([xr - bw_, y, xr, y + 30], fill=P["WHITE"] + (255,), outline=None)
         _text(d, (xr - 10, y + 15), btxt, 22, P["INK"], anchor="rm")
     else:
-        _text(d, (xr, y + 4),
-              "LIVE" if live else "SAMPLE", 22,
+        # LIVE = freshly fetched; 缓存 = showing last-known-good / baseline.
+        # Both are quiet (small text, gray when not live) -- never a red alarm.
+        lab = "LIVE" if live else "缓存"
+        _text(d, (xr, y + 4), lab, 22,
               P["WHITE"] if live else P["MGRAY"], anchor="rt")
     y += 48
     rem = cr.get("remaining", 0)

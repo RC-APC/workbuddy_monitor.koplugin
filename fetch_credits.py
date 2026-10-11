@@ -36,16 +36,41 @@ DETAIL_URL = "https://www.workbuddy.cn/billing/meter/get-user-resource"
 USAGE_URL = "https://www.workbuddy.cn/billing/meter/get-user-request-usage"
 CACHE_FILE = os.path.join(HERE, "credits_cache.json")
 COOKIE_FILE = os.path.join(HERE, "cookies.txt")
-TTL = 180  # seconds between live refreshes (matches the 3-min board refresh)
+TTL = 180       # seconds a SUCCESSFUL live result is reused (3-min board refresh)
+TTL_FAIL = 30   # seconds a FAILED (dead-cookie / network) result is reused, so a
+                # slow or hanging network can never make /cover.png block for
+                # minutes: we attempt a fresh fetch at most once per 30s.
+HTTP_TIMEOUT = 8  # per-request socket timeout (was 25 -> a hang stalled the
+                  # whole cover render for 345s once; 8s bounds each call)
 
 _HEADERS = {
     "accept": "application/json, text/plain, */*",
     "content-type": "application/json",
     "referer": "https://www.workbuddy.cn/profile/plans-usage",
+    # IMPORTANT (2026-10-11): the previous UA ended in "QuarkPC/7.3.5.1009".
+    # The gateway (openresty/APISIX in front of workbuddy.cn) answers that UA
+    # with a bare `401 Authorization Required` even though the session cookie
+    # is perfectly VALID -- proven by an A/B matrix: every request with an
+    # Edge/Chrome-155 UA returned 200 code=0, every request with the QuarkPC
+    # UA returned 401, independent of cookies and of every other header.
+    # Keep this browser-identical UA; do NOT make it look like a scraper tool.
     "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 "
-                   "QuarkPC/7.3.5.1009"),
+                   "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 "
+                   "Edg/155.0.0.0"),
 }
+
+
+# Cookies that must NOT be forwarded to the billing API: gateway stickiness /
+# marketing / analytics tokens. `tgw_l7_route` in particular pins the request
+# to a specific Tencent L7 gateway node from the *machine that generated* the
+# cookie, which makes the very same cookie fail when replayed from the bridge's
+# own network. WorkBuddy also binds the session to the login network, so a
+# cookie only works from the network it was issued on -- we just make sure the
+# pasted raw header is otherwise clean.
+_DROP_COOKIES = (
+    "tgw_l7_route", "trafficParams", "qcloud_from", "qcloud_visitId",
+    "_gcl_au", "__itrace_wid", "sensorsdata2015jssdkcross",
+)
 
 
 def _cookie():
@@ -54,6 +79,11 @@ def _cookie():
     Single source of truth: the file is the ONLY place we look (no env-var
     fallback) so a refresh is just a one-file overwrite. Blank lines and lines
     starting with '#' are ignored, so the file can carry human-readable notes.
+
+    The raw header pasted from any browser also carries gateway/marketing/
+    analytics cookies that must be stripped before we replay it (see
+    _DROP_COOKIES). We keep session + session_2 (the real auth pair) plus any
+    other non-junk cookie.
     """
     if os.path.isfile(COOKIE_FILE):
         try:
@@ -63,7 +93,17 @@ def _cookie():
                     s = line.strip()
                     if s and not s.startswith("#"):
                         parts.append(s)
-            return "".join(parts).strip()
+            text = "".join(parts).strip()
+            kept = []
+            for part in text.split(";"):
+                part = part.strip()
+                if not part:
+                    continue
+                key = part.split("=", 1)[0].strip()
+                if key in _DROP_COOKIES:
+                    continue
+                kept.append(part)
+            return "; ".join(kept)
         except Exception:
             return ""
     return ""
@@ -83,7 +123,7 @@ def _post_json(url, cookie, body=None):
         url, data=payload, headers=dict(_HEADERS, **{"cookie": cookie}),
         method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=25) as r:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
             status = r.status
             return json.loads(r.read().decode("utf-8")), status
     except urllib.error.HTTPError as e:
@@ -221,7 +261,8 @@ def fetch_usage(days=7, max_pages=10):
     total_known = None
     got = 0
     page = 1
-    while page <= max_pages:
+    budget = time.time() + 25  # overall wall-clock cap across all pages
+    while page <= max_pages and time.time() < budget:
         body = {
             "startTime": start.strftime("%Y-%m-%d 00:00:00"),
             "endTime": today.strftime("%Y-%m-%d 23:59:59"),
@@ -291,7 +332,8 @@ def fetch_agent_usage(days=7, max_pages=10):
     total_known = None
     got = 0
     page = 1
-    while page <= max_pages:
+    budget = time.time() + 25  # overall wall-clock cap across all pages
+    while page <= max_pages and time.time() < budget:
         body = {
             "startTime": start.strftime("%Y-%m-%d 00:00:00"),
             "endTime": today.strftime("%Y-%m-%d 23:59:59"),
@@ -404,8 +446,16 @@ def fetch_once():
 def get_credits(force=False):
     """Return normalised credits dict, using cache when fresh. On a hard
     network failure we return the stale cache (if any); on an auth failure we
-    surface a stale balance flagged authExpired=True so the cover can warn
-    instead of silently showing fake sample data."""
+    surface a stale balance flagged `stale=True` (or, if there is nothing to
+    fall back to, `authExpired=True`) so the cover can warn quietly instead of
+    silently showing fake sample data.
+
+    IMPORTANT: every outcome -- success AND failure -- is written to the cache
+    with a `_ts`. A successful fetch is reused for TTL (180s); a failed one is
+    reused for TTL_FAIL (30s) only. That negative cache is what keeps the board
+    responsive when the cookie is dead or the network hangs: without it every
+    /cover.png poll re-ran the whole (slow, multi-call) fetch.
+    """
     now = time.time()
     cached = None
     if os.path.isfile(CACHE_FILE):
@@ -414,8 +464,11 @@ def get_credits(force=False):
                 cached = json.load(f)
         except Exception:
             cached = None
-    if not force and cached is not None and (now - cached.get("_ts", 0)) < TTL:
-        return cached
+    if not force and cached is not None:
+        age = now - cached.get("_ts", 0)
+        ttl = TTL if cached.get("live") else TTL_FAIL
+        if age < ttl:
+            return cached
     try:
         live = fetch_once()
     except Exception:
@@ -423,22 +476,32 @@ def get_credits(force=False):
     if live is None:
         return cached  # hard/network failure -> stale if available, else None
     if live.get("authExpired"):
-        # never cache the failure; prefer last-known balance, flagged expired
+        # We could not authenticate right now. Two sub-cases:
+        #  (a) we have a last-known-good balance on disk -> surface THAT
+        #      number as `stale` (NOT `authExpired`) so the cover shows the
+        #      real figure with a quiet "缓存" note instead of screaming
+        #      EXPIRED over a bogus fallback.
+        #  (b) nothing cached at all -> genuine authExpired (cover warns).
         if cached is not None and (cached.get("remaining") or 0) > 0:
-            cached["authExpired"] = True
-            cached["live"] = False
-            return cached
-        live["remaining"] = 0
-        live["live"] = False
-        live["authExpired"] = True
-        return live
-    live["_ts"] = now
+            result = dict(cached)
+            result["stale"] = True
+            result["live"] = False
+            result["authExpired"] = False
+        else:
+            live["remaining"] = 0
+            live["live"] = False
+            live["stale"] = False
+            live["authExpired"] = True
+            result = live
+    else:
+        result = live
+    result["_ts"] = now
     try:
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(live, f, ensure_ascii=False, indent=2)
+            json.dump(result, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-    return live
+    return result
 
 
 if __name__ == "__main__":

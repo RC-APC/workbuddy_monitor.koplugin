@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>WorkBuddy 看板 · 远程</title>
+<!-- 整页每 30 秒刷新一次：拉取 GitHub 私有仓库里的最新封面快照 -->
+<meta http-equiv="refresh" content="30">
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0d0d0d;overflow:hidden;}
+  #board{display:block;width:100vw;height:100vh;object-fit:contain;}
+  #tip{position:fixed;left:8px;bottom:6px;color:#9a9a9a;
+       font:12px/1.4 -apple-system,system-ui,sans-serif;opacity:.55;
+       pointer-events:none;text-shadow:0 1px 2px #000;}
+</style>
+</head>
+<body>
+<img id="board" alt="看板加载中…" onerror="this.alt='加载失败';document.getElementById('tip').textContent='加载失败 · 请确认浏览器已登录 GitHub 账号（私有仓库需鉴权）';">
+<div id="tip">需已登录 GitHub 的浏览器 · 每 30s 刷新 · 远程快照</div>
+<script>
+  // 默认浅色封面；如需深色在网址后加 ?theme=dark
+  var q = new URLSearchParams(location.search);
+  var theme = (q.get('theme') || 'light') === 'dark' ? 'dark' : 'light';
+  // 封面由家里的电脑经 publish_snapshot.py 推到你的 GitHub 快照仓库（与 KOReader 远程模式同源）。
+  // ⚠️ 首次使用：把下面 URL 里的 YOUR_USERNAME / YOUR_REPO 换成你自己的
+  //    GitHub 用户名和快照仓库名（与 publish.ini 里 owner / repo 一致）。
+  var base = 'https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main';
+  document.getElementById('board').src = base + '/cover_' + theme + '.png';
+</script>
+</body>
+</html>

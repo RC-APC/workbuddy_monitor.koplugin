@@ -668,6 +668,21 @@ function WorkBuddyMonitor:_closeAllBoards()
     end)
 end
 
+-- ---- KOReader shutdown: guarantee the device can sleep again -----------
+-- Without this, if KOReader is closed while the dashboard (and thus
+-- _keepAwake(true)) was ever active, the firmware-level "preventScreenSaver"
+-- lipc property and the 1-year auto_suspend_timeout we parked on disk would
+-- persist -- so the Kindle would stay awake forever in its native system even
+-- after leaving KOReader. exitDashboard() already resets them on a normal exit;
+-- this covers the case where KOReader itself quits with the board still up (or
+-- is killed). Guarded by _awake_armed so a device that never opened the board
+-- keeps its own custom auto_suspend_timeout_seconds untouched.
+function WorkBuddyMonitor:close()
+    if self._awake_armed then
+        pcall(function() self:_keepAwake(false) end)
+    end
+end
+
 function WorkBuddyMonitor:configure()
     -- TextInputDialog is missing on some KOReader builds; fall back to
     -- InputDialog, then to a config-file instruction.
@@ -999,6 +1014,10 @@ function WorkBuddyMonitor:_keepAwake(on)
             self._prev_autosuspend = nil
         end
     end)
+    -- Track whether we have actually armed keep-awake, so close() can reset it
+    -- WITHOUT clobbering the user's own auto_suspend_timeout_seconds when the
+    -- dashboard was never opened.
+    self._awake_armed = on or nil
     -- We no longer touch screensaver_type at all: the lock-screen cover is a
     -- plain file the user points KOReader at, so there is nothing to heal here.
 end

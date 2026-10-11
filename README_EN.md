@@ -236,7 +236,7 @@ With a name set vs. without one:
 
 | Name set | No name set |
 | --- | --- |
-| ![Name set: 大葱, + blessing](assets/cover_greeting_named.png) | ![No name: blessing only](assets/cover_greeting_empty.png) |
+| ![Name set: 阿汪, + blessing](assets/cover_greeting_named.png) | ![No name: blessing only](assets/cover_greeting_empty.png) |
 
 Leave it empty and only the blessing shows. Note: `display_name` / `user_id` in `publish.ini` are **no longer read** (identity now comes fully and automatically from the local WorkBuddy account, so LAN and cloud behave identically).
 
@@ -251,6 +251,21 @@ For a stable long-term remote setup the key is not "start it once by hand" but "
 > With both in the Startup folder, the whole chain (bridge renders → pusher uploads → Kindle pulls the raw URL) closes automatically after every boot — exactly the "still shows up after a reboot" state.
 
 - The repo is Public: only someone with the URL can reach it, but **task names and your credit balance are drawn onto that PNG**. If that bothers you, use a sufficiently random repo name and set `push_status = false` in `publish.ini` to skip the JSON.
+
+### What is that prefix in front of my task name (space alias)
+
+Task names come from the session names in the WorkBuddy client database — identical to what the PC client's sidebar shows. To tell equally-named tasks in different projects apart, the board prefixes them with the project.
+
+The catch: **the client has no dedicated "space name" field** (`workspaces` holds only paths, `group_title` is ~always empty), so the prefix can only be the last segment of the task's working directory — i.e. a folder name. That is why you may see an English prefix like `my-project · 修复布局`.
+
+It already handles itself without any configuration:
+
+| Folder name | Task name | Board shows |
+| --- | --- | --- |
+| `my-project` (ASCII only) | contains CJK | English prefix **dropped**, shows only `修复布局` |
+| `我的项目` (contains CJK) | anything | shown normally as `我的项目 · 修复布局` |
+
+To replace a folder name with something more readable, copy `space_alias.json.example` to `space_alias.json` in the same folder and fill it in following the comments inside. Changes apply on save — no bridge restart needed. (That file is git-ignored, so your own table will never be committed by accident.)
 
 ## FAQ
 
