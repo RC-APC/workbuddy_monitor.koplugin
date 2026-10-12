@@ -737,12 +737,13 @@ def render_cover(status, w=1080, h=1440, task_layout="grouped", mono=True,
     _text(d, (x0, y), "◆ EXPIRY", 30, P["WHITE"], anchor="lt")
     y += 42
     if sum7 > 0:
-        fg7 = P["INK"] if mono else P["RED"]
-        if mono:
-            d.rectangle([x0 - 6, y - 6, xr + 6, y + 34], fill=P["WHITE"] + (255,), outline=None)
-        _text(d, (x0, y), f"▲ 未来7天到期: {sum7:,.0f} 积分", 27, fg7, anchor="lt")
+        # Quiet inline note -- NOT a full-width alert banner. No inverted
+        # block, muted colour, smaller size, so it reads like a footnote
+        # under the EXPIRY header rather than a glaring alarm strip.
+        fg7 = P["LGRAY"] if mono else P["MGRAY"]
+        _text(d, (x0 + 16, y), f"未来7天到期 {sum7:,.0f} 积分", 23, fg7, anchor="lt")
     else:
-        _text(d, (x0, y), "未来7天到期: 0 积分", 25, P["LGRAY"], anchor="lt")
+        _text(d, (x0 + 16, y), "未来7天到期: 0 积分", 23, P["LGRAY"], anchor="lt")
     y += 40
     y += 14
 
