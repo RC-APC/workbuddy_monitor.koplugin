@@ -496,6 +496,33 @@ function WorkBuddyMonitor:addToMainMenu(menu_items)
     }
 end
 
+-- ---- suspend: guarantee the device is actually allowed to sleep ----------
+-- Every lever above exists to stop an AUTOMATIC suspend while the board is up.
+-- They keep working even once we no longer want them, though: if a suspend is
+-- genuinely requested (power button, or a firmware idle timer we failed to
+-- block), autosuspend has already inhibited input and is waiting on powerd,
+-- while powerd refuses because preventScreenSaver is still 1 -- the device then
+-- ends up half-asleep with a dead UI. That is the "第一次能睡、唤醒后到休眠点
+-- 就卡屏" symptom: some lever survived into the next cycle.
+--
+-- Clearing the runtime levers here lets every real suspend complete cleanly.
+-- Nothing needs restoring afterwards: onResume() rebuilds whatever the board
+-- still needs from LIVE state instead of trusting leftovers. The persisted
+-- auto_suspend_timeout_seconds is deliberately NOT touched here (that is
+-- _keepAwake's job) so we never overwrite the user's own setting.
+function WorkBuddyMonitor:onSuspend()
+    -- A. Cancel timers FIRST. The 3-min refresh is a SYNCHRONOUS network
+    -- fetch (up to ~20 s timeout on the lock-file fallback). If its callback
+    -- fires DURING the suspend sequence it pins the UI thread -- and the
+    -- device is already mid-"Inhibiting user input" waiting on powerd --
+    -- the whole suspend then stalls and you get the "到休眠点就卡屏" frozen
+    -- screen. Cancel it here; onResume() re-arms the refresh 2 s after wake.
+    pcall(function() self:_cancelTimer() end)
+    -- B. Clear the runtime anti-suspend levers, so the firmware + autosuspend
+    -- both see a clean slate and any genuine suspend can complete cleanly.
+    pcall(function() self:_setAwakeRuntime(false) end)
+end
+
 -- ---- always-on dashboard: keep the device awake + WiFi up so the 3-min ----
 -- ---- fetch loop can actually run. NOTE: e-ink cannot fetch over WiFi   ----
 -- ---- while suspended, so "autonomous refresh" REQUIRES staying awake.  ----
@@ -506,11 +533,23 @@ function WorkBuddyMonitor:onResume()
     -- Clean stale cached covers on wake too (the device may have been off for
     -- days and the data dir could hold many expired wb_cover_*.png files).
     pcall(function() self:_sweepCache() end)
-    -- Keep the lock-screen cover file fresh on wake (network is up here),
-    -- but only if the user has armed it via "设置休眠壁纸".
-    pcall(function() self:_updateLockFile() end)
-    if not self._dashboard or self._exiting then return end
+    -- Re-derive the runtime "stay awake" levers from LIVE state. powerd does not
+    -- reliably keep preventScreenSaver across a real suspend, so instead of
+    -- trusting whatever survived, rebuild it: armed only while the board is
+    -- actually up, and off otherwise.
+    pcall(function() self:_setAwakeRuntime(self._dashboard == true) end)
+    -- Keep the lock-screen cover file fresh on wake, but only if the user has
+    -- armed it via "设置休眠壁纸".
+    -- MUST be deferred: this can fall back to a synchronous network fetch with
+    -- a 20 s budget. Running that inline in the middle of the resume sequence
+    -- -- while WiFi itself is still coming back up -- blocks the UI thread and
+    -- can leave KOReader's own resume/wifi state machine wedged; that wedge is
+    -- what makes the NEXT suspend stall instead of sleeping ("到休眠点就卡屏").
     local plugin = self
+    UIManager:scheduleIn(6, function()
+        pcall(function() plugin:_updateLockFile() end)
+    end)
+    if not self._dashboard or self._exiting then return end
     UIManager:scheduleIn(2, function()
         if plugin._dashboard and not plugin._exiting then
             -- contained: a wake-up refresh must never throw out of the
@@ -972,7 +1011,12 @@ end
 -- So we also (a) set PluginShare.pause_auto_suspend, which autosuspend checks
 -- on every tick and honours immediately, and (b) park the timeout itself at 0
 -- (= disabled) as a belt-and-braces fallback. Both are undone on exit.
-function WorkBuddyMonitor:_keepAwake(on)
+-- Runtime-only anti-suspend levers. These write NOTHING to disk, so they can be
+-- toggled as often as needed -- including from the suspend/resume handlers --
+-- without ever clobbering the user's own persisted
+-- auto_suspend_timeout_seconds. Splitting them out of _keepAwake() is what lets
+-- onSuspend() make the device genuinely sleepable with one safe call.
+function WorkBuddyMonitor:_setAwakeRuntime(on)
     -- (a) tell the autosuspend plugin to stand down, right now
     pcall(function()
         local ok, PluginShare = pcall(require, "pluginshare")
@@ -996,6 +1040,10 @@ function WorkBuddyMonitor:_keepAwake(on)
                         .. (on and "1" or "0"))
         end
     end)
+end
+
+function WorkBuddyMonitor:_keepAwake(on)
+    self:_setAwakeRuntime(on)
     pcall(function()
         if not G_reader_settings then return end
         -- (c) park the timeout at a huge positive value (NOT 0): a 0 disables
