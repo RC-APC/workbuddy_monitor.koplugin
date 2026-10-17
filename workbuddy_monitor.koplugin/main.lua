@@ -884,10 +884,10 @@ function WorkBuddyMonitor:buildBoard(data, err)
     local soon = {}
     for _, e in ipairs(exp) do
         local dl = tonumber(e.daysLeft)
-        if dl == nil or dl <= 7 then soon[#soon + 1] = e end
+        if dl == nil or dl <= 3 then soon[#soon + 1] = e end
     end
     if #soon > 0 then
-        add("EXPIRING <=7d:", 18)
+        add("EXPIRING <=3d:", 18)
         for _, e in ipairs(soon) do
             local amt = tostring(e.amount or "?")
             local dl = tonumber(e.daysLeft)
@@ -895,7 +895,7 @@ function WorkBuddyMonitor:buildBoard(data, err)
             add("  " .. amt .. " credits  exp " .. tostring(when), 16)
         end
     else
-        add("no credits expiring within 7 days", 16)
+        add("no credits expiring within 3 days", 16)
     end
 
     add("", 6)
