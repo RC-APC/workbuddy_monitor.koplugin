@@ -727,23 +727,23 @@ def render_cover(status, w=1080, h=1440, task_layout="grouped", mono=True,
     else:
         y += 4
 
-    # ---- expiry: ONLY the next-7-day total (0 means 0; used-up packs with
+    # ---- expiry: ONLY the next-3-day total (0 means 0; used-up packs with
     # amount=0 are already filtered out upstream and never counted) ----
     expiring = [e for e in (cr.get("expiring", []) or [])
                 if (e.get("amount", 0) or 0) > 0]
-    within7 = [e for e in expiring if (e.get("daysLeft", 99) or 99) <= 7]
-    sum7 = round(sum((e.get("amount", 0) or 0) for e in within7), 2)
+    within3 = [e for e in expiring if (e.get("daysLeft", 99) or 99) <= 3]
+    sum3 = round(sum((e.get("amount", 0) or 0) for e in within3), 2)
     y += 6
     _text(d, (x0, y), "◆ EXPIRY", 30, P["WHITE"], anchor="lt")
     y += 42
-    if sum7 > 0:
+    if sum3 > 0:
         # Quiet inline note -- NOT a full-width alert banner. No inverted
         # block, muted colour, smaller size, so it reads like a footnote
         # under the EXPIRY header rather than a glaring alarm strip.
-        fg7 = P["LGRAY"] if mono else P["MGRAY"]
-        _text(d, (x0 + 16, y), f"未来7天到期 {sum7:,.0f} 积分", 23, fg7, anchor="lt")
+        fg3 = P["LGRAY"] if mono else P["MGRAY"]
+        _text(d, (x0 + 16, y), f"未来3天到期 {sum3:,.0f} 积分", 23, fg3, anchor="lt")
     else:
-        _text(d, (x0 + 16, y), "未来7天到期: 0 积分", 23, P["LGRAY"], anchor="lt")
+        _text(d, (x0 + 16, y), "未来3天到期: 0 积分", 23, P["LGRAY"], anchor="lt")
     y += 40
     y += 14
 
