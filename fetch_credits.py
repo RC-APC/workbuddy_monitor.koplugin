@@ -43,21 +43,72 @@ TTL_FAIL = 30   # seconds a FAILED (dead-cookie / network) result is reused, so 
 HTTP_TIMEOUT = 8  # per-request socket timeout (was 25 -> a hang stalled the
                   # whole cover render for 345s once; 8s bounds each call)
 
-_HEADERS = {
+# --- User-Agent with auto-bump fallback ------------------------------------
+# The gateway in front of workbuddy.cn rejects non-browser UAs with a bare 401,
+# AND it pins a *minimum* Chrome/Edge major version. On 2026-10-30 the UA had
+# to be bumped 155 -> 156 because the gateway stopped accepting 155 (every
+# metering endpoint returned 401). To stop this from silently breaking the
+# board every time the browser updates, we remember the last *working* major
+# in ua_state.json and, on a gateway 401, automatically try the next few
+# higher majors until one is accepted. The first accepted version is then
+# persisted, so the retry only happens once (when the gateway actually moves
+# the goalpost) -- not on every poll.
+_DEFAULT_MAJOR = 156          # last known-good as of 2026-10-30
+_UA_STATE_FILE = os.path.join(HERE, "ua_state.json")
+_UA_MAX_BUMP = 12             # never try a major more than +12 above the saved one
+
+_BASE_HEADERS = {
     "accept": "application/json, text/plain, */*",
     "content-type": "application/json",
     "referer": "https://www.workbuddy.cn/profile/plans-usage",
-    # IMPORTANT (2026-10-11): the previous UA ended in "QuarkPC/7.3.5.1009".
-    # The gateway (openresty/APISIX in front of workbuddy.cn) answers that UA
-    # with a bare `401 Authorization Required` even though the session cookie
-    # is perfectly VALID -- proven by an A/B matrix: every request with an
-    # Edge/Chrome-155 UA returned 200 code=0, every request with the QuarkPC
-    # UA returned 401, independent of cookies and of every other header.
-    # Keep this browser-identical UA; do NOT make it look like a scraper tool.
-    "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 "
-                   "Edg/155.0.0.0"),
 }
+
+# module-level current major (kept in sync with ua_state.json at import time)
+_UA_MAJOR = _DEFAULT_MAJOR
+
+
+def _load_ua_major():
+    """Return the last persisted working major, or _DEFAULT_MAJOR."""
+    global _UA_MAJOR
+    m = _DEFAULT_MAJOR
+    try:
+        if os.path.isfile(_UA_STATE_FILE):
+            with open(_UA_STATE_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            mv = int(d.get("major", _DEFAULT_MAJOR))
+            if mv >= 1:
+                m = mv
+    except Exception:
+        pass
+    _UA_MAJOR = m
+    return m
+
+
+def _save_ua_major(m):
+    """Persist a working major and update the in-process global."""
+    global _UA_MAJOR
+    _UA_MAJOR = m
+    try:
+        with open(_UA_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"major": m,
+                       "savedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+                      f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _ua_string(major):
+    return ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/%d.0.0.0 Safari/537.36 Edg/%d.0.0.0"
+            % (major, major))
+
+
+def _headers(major=None):
+    m = major if major is not None else _UA_MAJOR
+    return dict(_BASE_HEADERS, **{"user-agent": _ua_string(m)})
+
+
+_load_ua_major()  # seed _UA_MAJOR from disk at import time
 
 
 # Cookies that must NOT be forwarded to the billing API: gateway stickiness /
@@ -117,10 +168,11 @@ class _AuthError(Exception):
         super().__init__("auth_http_%d" % status)
 
 
-def _post_json(url, cookie, body=None):
+def _post_json(url, cookie, body=None, headers=None):
     payload = json.dumps(body).encode("utf-8") if body is not None else b"{}"
+    hdrs = headers if headers is not None else _headers()
     req = urllib.request.Request(
-        url, data=payload, headers=dict(_HEADERS, **{"cookie": cookie}),
+        url, data=payload, headers=dict(hdrs, **{"cookie": cookie}),
         method="POST")
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
@@ -269,7 +321,7 @@ def fetch_usage(days=7, max_pages=10):
             "pageNum": page,
             "pageSize": 1000,
         }
-        d, _s = _post_json(USAGE_URL, cookie=_cookie(), body=body)
+        d, _s = _post_json(USAGE_URL, cookie=_cookie(), headers=_headers(), body=body)
         if not d or d.get("code") != 0:
             break
         data = d.get("data") or {}
@@ -341,7 +393,7 @@ def fetch_agent_usage(days=7, max_pages=10):
             "pageSize": 1000,
         }
         try:
-            d, _s = _post_json(USAGE_URL, cookie=_cookie(), body=body)
+            d, _s = _post_json(USAGE_URL, cookie=_cookie(), headers=_headers(), body=body)
         except _AuthError:
             return []   # cookie dead -> no live tasks; caller falls back
         except Exception:
@@ -400,20 +452,37 @@ def fetch_once():
     cookie = _cookie()
     if not cookie:
         return {"authExpired": True, "noCookie": True}
-    # balance (hard requirement)
-    try:
-        summary, s1 = _post_json(SUMMARY_URL, cookie)
-    except _AuthError:
+    # balance (hard requirement). On a gateway 401 (UA major too old) we
+    # automatically try the next few higher Edge/Chrome majors -- the gateway
+    # only enforces a *minimum*, so a higher version is accepted; we then
+    # persist it so the retry happens only once, when the gateway moves the
+    # goalpost. A 200 + explicit login message (cookie actually dead) is NOT
+    # retried -- bumping the UA cannot fix a dead cookie.
+    base = _load_ua_major()
+    candidates = [base] + [m for m in range(base + 1, base + 1 + _UA_MAX_BUMP)]
+    summary, s1, used_major = None, None, None
+    for major in candidates:
+        try:
+            summary, s1 = _post_json(SUMMARY_URL, cookie, headers=_headers(major))
+        except _AuthError:
+            continue  # try the next (higher) major
+        except Exception:
+            return None  # network / transient -> fall back to cache
+        if _is_auth_fail(summary, s1):
+            return {"authExpired": True}  # dead cookie, not a UA problem
+        used_major = major
+        break
+    if summary is None:
+        # every candidate major was rejected with 401 -> cookie dead or the
+        # gateway rejects everything we tried -> surface auth failure.
         return {"authExpired": True}
-    except Exception:
-        return None  # network / transient -> fall back to cache
-    if _is_auth_fail(summary, s1):
-        return {"authExpired": True}
+    if used_major != base:
+        _save_ua_major(used_major)   # remember the newly-accepted version
     rem, used, total, plan = _parse_summary(summary.get("data", {}))
     # expiry (best-effort, but an auth failure here still means dead cookie)
     expiry, cycle = [], None
     try:
-        detail, s2 = _post_json(DETAIL_URL, cookie)
+        detail, s2 = _post_json(DETAIL_URL, cookie, headers=_headers(used_major))
         if _is_auth_fail(detail, s2):
             return {"authExpired": True}
         if detail and detail.get("code") == 0:
